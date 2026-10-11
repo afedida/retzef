@@ -164,7 +164,8 @@ export function LibraryPanel() {
 }
 
 export function TranscriptPanel() {
-  const clips = useEditor((state) => state.project.clips.filter((clip) => clip.text).sort((a, b) => a.start - b.start))
+  const project = useEditor((state) => state.project)
+  const clips = project.clips.filter((clip) => clip.text).sort((a, b) => a.start - b.start)
   const selected = useEditor((state) => state.selectedClipId)
   const words = clips.flatMap((clip) => clip.words.map((word, index) => ({ clip, word, index })))
   return (

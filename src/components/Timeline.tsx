@@ -127,7 +127,7 @@ export function Timeline() {
   }
 
   return (
-    <section className="flex h-[min(34vh,320px)] min-h-[210px] shrink-0 flex-col border-t bg-[#121318]">
+    <section className="flex h-[min(34vh,320px)] min-h-[210px] shrink-0 flex-col border-t bg-[#1e1e1e]">
       <div className="flex h-10 shrink-0 items-center gap-1 border-b px-2">
         <Button type="button" size="sm" variant="secondary" onClick={splitAtPlayhead}>
           <Scissors />

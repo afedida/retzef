@@ -745,7 +745,14 @@ export function addAdjustment() {
 }
 
 export function setCaptionStyle(style: 'plain' | 'karaoke' | 'pop') {
-  const ids = selectedIds()
+  const textIds = state.project.clips.filter((clip) => clip.text).map((clip) => clip.id)
+  const picked = selectedIds().filter((id) => textIds.includes(id))
+  const ids = picked.length ? picked : textIds
+  if (!ids.length) {
+    state.status = 'אין כתוביות לעדכון'
+    emit()
+    return
+  }
   commit((project) =>
     ids.reduce((next, id) => {
       const clip = next.clips.find((item) => item.id === id)
@@ -756,6 +763,8 @@ export function setCaptionStyle(style: 'plain' | 'karaoke' | 'pop') {
       })
     }, project),
   )
+  state.status = style === 'karaoke' ? 'סגנון קריוקי' : style === 'pop' ? 'סגנון פופ' : 'כתוביות רגילות'
+  emit()
 }
 
 export function nestSelection() {
