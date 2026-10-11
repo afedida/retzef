@@ -6,7 +6,11 @@ import {
   type WrappedAudioBuffer,
 } from 'mediabunny'
 import { getBlob } from '@/lib/blobs'
-import { audioGain, clampSpeed } from '@/lib/edit'
+import { denoisePcm } from '@/lib/denoise'
+import { audioGain, clampSpeed, trackHeard } from '@/lib/edit'
+import { applyGain, gainForTarget, integratedLufs } from '@/lib/loudness'
+import { timeStretch } from '@/lib/stretch'
+import { speechIntervals, speechLevelAt, type Span } from '@/lib/vad'
 import type { Asset, Clip, Project } from '@/types'
 
 const cache = new Map<string, Promise<AudioBuffer | null>>()
@@ -63,17 +67,57 @@ export function audibleClips(project: Project, assets: Asset[]): Clip[] {
   const byId = new Map(assets.map((asset) => [asset.id, asset]))
   return project.clips.filter((clip) => {
     if (!clip.assetId || clip.volume <= 0) return false
+    if (!trackHeard(project, clip.trackId)) return false
     return byId.get(clip.assetId)?.hasAudio === true
   })
 }
 
-function speechAt(project: Project, assets: Asset[], time: number, duckTrackId: string): boolean {
+let speechRegions: Span[] = []
+
+export function setSpeechRegions(regions: Span[]) {
+  speechRegions = regions
+}
+
+export function getSpeechRegions(): Span[] {
+  return speechRegions
+}
+
+function overlapLevel(project: Project, assets: Asset[], time: number, duckTrackId: string, attack: number, release: number): number {
   const byId = new Map(assets.map((asset) => [asset.id, asset]))
-  return project.clips.some((clip) => {
-    if (clip.trackId === duckTrackId || !clip.assetId || clip.volume <= 0) return false
-    if (byId.get(clip.assetId)?.hasAudio !== true) return false
-    return time >= clip.start && time < clip.start + clip.duration
-  })
+  const regions = project.clips
+    .filter((clip) => {
+      if (clip.trackId === duckTrackId || !clip.assetId || clip.volume <= 0) return false
+      if (!trackHeard(project, clip.trackId)) return false
+      return byId.get(clip.assetId)?.hasAudio === true
+    })
+    .map((clip) => ({ start: clip.start, end: clip.start + clip.duration }))
+  return speechLevelAt(time, regions, attack, release)
+}
+
+export async function analyzeSpeech(project: Project, assets: Asset[]): Promise<Span[]> {
+  const byId = new Map(assets.map((asset) => [asset.id, asset]))
+  const regions: Span[] = []
+  for (const clip of project.clips) {
+    const track = project.tracks.find((item) => item.id === clip.trackId)
+    if (!clip.assetId || track?.duck || !trackHeard(project, clip.trackId)) continue
+    if (byId.get(clip.assetId)?.hasAudio !== true) continue
+    const buffer = await loadAudioBuffer(clip.assetId)
+    if (!buffer) continue
+    const speed = clampSpeed(clip.speed)
+    const offset = Math.max(0, Math.round(clip.inPoint * buffer.sampleRate))
+    const length = Math.max(1, Math.round(clip.duration * speed * buffer.sampleRate))
+    const channel = buffer.getChannelData(0)
+    const slice = channel.subarray(offset, Math.min(channel.length, offset + length))
+    if (slice.length < 32) continue
+    for (const span of speechIntervals(slice, buffer.sampleRate)) {
+      regions.push({
+        start: clip.start + span.start / speed,
+        end: clip.start + span.end / speed,
+      })
+    }
+  }
+  speechRegions = regions
+  return regions
 }
 
 export function mixGain(project: Project, assets: Asset[], clip: Clip, local: number): number {
@@ -81,11 +125,67 @@ export function mixGain(project: Project, assets: Asset[], clip: Clip, local: nu
   let duck = 1
   if (track?.duck) {
     const time = clip.start + local
-    const active = speechAt(project, assets, time, clip.trackId)
-    const edge = speechAt(project, assets, time - 0.12, clip.trackId) || speechAt(project, assets, time + 0.08, clip.trackId)
-    duck = active ? 0.28 : edge ? 0.62 : 1
+    const amount = project.duckAmount ?? 0.72
+    const attack = project.duckAttack ?? 0.08
+    const release = project.duckRelease ?? 0.28
+    const level = speechRegions.length ? speechLevelAt(time, speechRegions, attack, release) : overlapLevel(project, assets, time, clip.trackId, attack, release)
+    duck = 1 - amount * level
   }
-  return audioGain(clip, local) * project.masterVolume * duck
+  return audioGain(clip, local) * (project.masterVolume ?? 1) * duck
+}
+
+const playbackCache = new Map<string, Promise<AudioBuffer>>()
+
+function sliceChannel(buffer: AudioBuffer, channel: number, offset: number, length: number): Float32Array {
+  const data = buffer.getChannelData(Math.min(channel, buffer.numberOfChannels - 1))
+  const start = Math.max(0, Math.min(data.length, offset))
+  const end = Math.max(start, Math.min(data.length, start + length))
+  return data.slice(start, end)
+}
+
+async function processSlice(clip: Clip, buffer: AudioBuffer, offsetSec: number, spanSec: number): Promise<AudioBuffer> {
+  const speed = clampSpeed(clip.speed)
+  const preserve = clip.preservePitch !== false && Math.abs(speed - 1) > 0.001
+  const rate = buffer.sampleRate
+  const offset = Math.max(0, Math.round(offsetSec * rate))
+  const length = Math.max(1, Math.round(spanSec * rate))
+  const channels = buffer.numberOfChannels
+  const processed: Float32Array[] = []
+  for (let channel = 0; channel < channels; channel++) {
+    let samples = sliceChannel(buffer, channel, offset, length)
+    if (preserve) samples = timeStretch(samples, rate, speed)
+    if (clip.denoise) samples = await denoisePcm(samples, rate)
+    processed.push(samples)
+  }
+  let gain = 1
+  if (clip.normalize && processed[0]) {
+    const loudness = integratedLufs(processed[0], processed[1] ?? null, rate)
+    gain = gainForTarget(loudness)
+    for (let channel = 0; channel < processed.length; channel++) processed[channel] = applyGain(processed[channel]!, gain)
+  }
+  const outLength = processed[0]?.length ?? 1
+  const output = new AudioBuffer({ length: Math.max(1, outLength), numberOfChannels: channels, sampleRate: rate })
+  for (let channel = 0; channel < channels; channel++) output.getChannelData(channel).set(processed[channel] ?? new Float32Array(outLength))
+  return output
+}
+
+export async function clipPlaybackBuffer(clip: Clip, buffer: AudioBuffer, offsetSec: number, spanSec: number): Promise<{
+  buffer: AudioBuffer
+  offset: number
+  rate: number
+  span: number
+}> {
+  const speed = clampSpeed(clip.speed)
+  const needs = clip.denoise || clip.normalize || (clip.preservePitch !== false && Math.abs(speed - 1) > 0.001)
+  if (!needs) return { buffer, offset: offsetSec, rate: speed, span: spanSec }
+  const key = `${clip.assetId}:${offsetSec.toFixed(3)}:${spanSec.toFixed(3)}:${speed}:${clip.preservePitch}:${clip.denoise}:${clip.normalize}`
+  let pending = playbackCache.get(key)
+  if (!pending) {
+    pending = processSlice(clip, buffer, offsetSec, spanSec)
+    playbackCache.set(key, pending)
+  }
+  const next = await pending
+  return { buffer: next, offset: 0, rate: 1, span: next.duration }
 }
 
 export async function mixProjectAudio(project: Project, assets: Asset[], duration: number): Promise<AudioBuffer> {
@@ -95,6 +195,7 @@ export async function mixProjectAudio(project: Project, assets: Asset[], duratio
   const master = offline.createGain()
   master.gain.value = 1
   master.connect(offline.destination)
+  await analyzeSpeech(project, assets)
   const clips = audibleClips(project, assets)
   for (const clip of clips) {
     if (!clip.assetId) continue
@@ -105,14 +206,15 @@ export async function mixProjectAudio(project: Project, assets: Asset[], duratio
     if (offset >= buffer.duration) continue
     const bufferSpan = Math.min(clip.duration * speed, buffer.duration - offset)
     if (bufferSpan <= 0.001) continue
+    const playback = await clipPlaybackBuffer(clip, buffer, offset, bufferSpan)
     const source = offline.createBufferSource()
-    source.buffer = buffer
-    source.playbackRate.value = speed
+    source.buffer = playback.buffer
+    source.playbackRate.value = playback.rate
     const gain = offline.createGain()
     scheduleGain(gain.gain, project, assets, clip, 0)
     source.connect(gain)
     gain.connect(master)
-    source.start(Math.max(0, clip.start), offset, bufferSpan)
+    source.start(Math.max(0, clip.start), playback.offset, playback.span)
   }
   return offline.startRendering()
 }

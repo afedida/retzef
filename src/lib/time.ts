@@ -1,13 +1,14 @@
 import { OUTPUT_FPS } from '@/types'
 
-export function formatTimecode(seconds: number): string {
+export function formatTimecode(seconds: number, fps = OUTPUT_FPS): string {
+  const rate = fps > 0 ? fps : OUTPUT_FPS
   const clamped = Math.max(0, seconds)
-  const frames = Math.min(OUTPUT_FPS - 1, Math.floor((clamped % 1) * OUTPUT_FPS + 1e-4))
+  const frames = Math.min(rate - 1, Math.floor((clamped % 1) * rate + 1e-4))
   const whole = Math.floor(clamped)
   const s = whole % 60
   const m = Math.floor(whole / 60) % 60
   const h = Math.floor(whole / 3600)
-  const body = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${frames.toString().padStart(2, '0')}`
+  const body = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${Math.floor(frames).toString().padStart(2, '0')}`
   return h > 0 ? `${h}:${body}` : body
 }
 

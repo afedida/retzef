@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { Flag, Magnet, Minus, Plus, Scissors, Trash2 } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Eye, EyeOff, Flag, Headphones, Lock, Magnet, Minus, Plus, Scissors, Trash2, Unlock, VolumeX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { clipEnd, projectDuration } from '@/lib/edit'
 import { formatClock } from '@/lib/time'
@@ -12,20 +12,33 @@ import {
   nudgeClip,
   nudgeTrim,
   placeAsset,
+  addLaneKey,
+  moveLaneKey,
   placeMarker,
   removeSelectedClip,
   rippleSelectedClip,
   seek,
   selectClip,
   selectMarker,
+  setLane,
   setPps,
   setSnap,
+  toggleRipple,
+  toggleTrackFlag,
   splitAtPlayhead,
   subscribeFrames,
 } from '@/state/editor'
 import { useEditor } from '@/state/hooks'
 import { cn } from '@/lib/utils'
-import type { Asset, Clip, Track } from '@/types'
+import type { Asset, Clip, KeyLane, Track } from '@/types'
+
+const LANES: { id: KeyLane; label: string }[] = [
+  { id: 'volume', label: 'עוצמה' },
+  { id: 'opacity', label: 'שקיפות' },
+  { id: 'scale', label: 'זום' },
+  { id: 'x', label: 'אופקי' },
+  { id: 'y', label: 'אנכי' },
+]
 
 const RULER = 28
 const ROW = 56
@@ -51,6 +64,9 @@ export function Timeline() {
   const project = useEditor((state) => state.project)
   const assets = useEditor((state) => state.assets)
   const selectedClipId = useEditor((state) => state.selectedClipId)
+  const selectedClipIds = useEditor((state) => state.selectedClipIds)
+  const lane = useEditor((state) => state.lane)
+  const status = useEditor((state) => state.status)
   const selectedMarkerId = useEditor((state) => state.selectedMarkerId)
   const snap = useEditor((state) => state.snap)
   const pps = useEditor((state) => state.pps)
@@ -132,6 +148,27 @@ export function Timeline() {
           <Magnet />
           הצמדה
         </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={project.ripple ? 'secondary' : 'ghost'}
+          aria-pressed={project.ripple}
+          onClick={() => toggleRipple(!project.ripple)}
+        >
+          גלישה
+        </Button>
+        <select
+          aria-label="ערוץ נקודות"
+          className="h-8 rounded-md border bg-transparent px-2 text-xs"
+          value={lane}
+          onChange={(event) => setLane(event.target.value as KeyLane)}
+        >
+          {LANES.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
         <div className="ms-auto flex items-center gap-1">
           <Button type="button" size="icon-sm" variant="ghost" aria-label="התרחקות" onClick={() => setPps(pps / 1.2)}>
             <Minus />
@@ -145,12 +182,24 @@ export function Timeline() {
         </div>
       </div>
       <div className="flex min-h-0 flex-1">
-        <div className="w-28 shrink-0 border-e bg-card/50">
+        <div className="w-40 shrink-0 border-e bg-card/50">
           <div style={{ height: RULER }} />
           {project.tracks.map((track) => (
-            <div key={track.id} style={{ height: ROW }} className="flex items-center gap-1 border-b px-2 text-[11px] text-muted-foreground">
+            <div key={track.id} style={{ height: ROW }} className="flex items-center gap-0.5 border-b px-1 text-[11px] text-muted-foreground">
               <span className={cn('size-1.5 shrink-0 rounded-full', swatch(track))} />
               <span className="min-w-0 flex-1 truncate">{track.name}</span>
+              <TrackToggle label={track.locked ? 'פתיחת מסלול' : 'נעילת מסלול'} pressed={track.locked} onClick={() => toggleTrackFlag(track.id, 'locked', !track.locked)}>
+                {track.locked ? <Lock className="size-3" /> : <Unlock className="size-3" />}
+              </TrackToggle>
+              <TrackToggle label={track.muted ? 'ביטול השתקה' : 'השתקת מסלול'} pressed={track.muted} onClick={() => toggleTrackFlag(track.id, 'muted', !track.muted)}>
+                <VolumeX className="size-3" />
+              </TrackToggle>
+              <TrackToggle label={track.solo ? 'ביטול סולו' : 'סולו'} pressed={track.solo} onClick={() => toggleTrackFlag(track.id, 'solo', !track.solo)}>
+                <Headphones className="size-3" />
+              </TrackToggle>
+              <TrackToggle label={track.hidden ? 'הצגת מסלול' : 'הסתרת מסלול'} pressed={track.hidden} onClick={() => toggleTrackFlag(track.id, 'hidden', !track.hidden)}>
+                {track.hidden ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+              </TrackToggle>
               {track.type === 'text' && project.tracks.filter((item) => item.type === 'text').length > 1 && (
                 <button type="button" className="text-xs" aria-label={`הסרת ${track.name}`} onClick={() => deleteTextTrack(track.id)}>
                   ×
@@ -223,7 +272,7 @@ export function Timeline() {
                 onPointerDown={(event) => {
                   if (event.target !== event.currentTarget) return
                   seek(timeFromClient(event.clientX))
-                  selectClip(null)
+                  if (!event.shiftKey) selectClip(null)
                 }}
               >
                 {project.clips
@@ -234,7 +283,8 @@ export function Timeline() {
                       clip={clip}
                       track={track}
                       pps={pps}
-                      selected={clip.id === selectedClipId}
+                      selected={selectedClipIds.includes(clip.id) || clip.id === selectedClipId}
+                      lane={lane}
                       asset={clip.assetId ? assetById.get(clip.assetId) ?? null : null}
                     />
                   ))}
@@ -266,9 +316,35 @@ export function Timeline() {
         <span>Shift+Delete גלישה</span>
         <span>חצים הזזת קליפ</span>
         <span>M סמן</span>
+        <span>Ctrl+C/V</span>
+        {status && <span className="text-amber-200">{status}</span>}
         <span className="ms-auto">Ctrl+גלגלת לזום</span>
       </div>
     </section>
+  )
+}
+
+function TrackToggle({
+  label,
+  pressed,
+  onClick,
+  children,
+}: {
+  label: string
+  pressed: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={pressed}
+      className={cn('grid size-4 place-items-center rounded text-[10px]', pressed ? 'bg-primary/30 text-foreground' : 'opacity-60')}
+      onClick={onClick}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -294,17 +370,27 @@ function Ruler({ width, pps }: { width: number; pps: number }) {
   )
 }
 
+function laneKeys(clip: Clip, lane: KeyLane) {
+  const keys = clip.keys?.[lane] ?? []
+  if (lane === 'volume' && clip.volumeKeys.length && !keys.length) {
+    return clip.volumeKeys.map((key) => ({ time: key.time, value: key.value, ease: key.ease ?? ('linear' as const) }))
+  }
+  return keys
+}
+
 function ClipBlock({
   clip,
   track,
   pps,
   selected,
+  lane,
   asset,
 }: {
   clip: Clip
   track: Track
   pps: number
   selected: boolean
+  lane: KeyLane
   asset: Asset | null
 }) {
   const label = clip.text?.content.replaceAll('\n', ' ') || asset?.name || 'מדיה חסרה'
@@ -316,7 +402,11 @@ function ClipBlock({
     if (event.button !== 0) return
     event.stopPropagation()
     event.preventDefault()
-    selectClip(clip.id)
+    if (track.locked) {
+      selectClip(clip.id, event.shiftKey)
+      return
+    }
+    selectClip(clip.id, event.shiftKey)
     const originX = event.clientX
     const originY = event.clientY
     const originStart = clip.start
@@ -348,10 +438,19 @@ function ClipBlock({
         'absolute top-1.5 bottom-1.5 touch-none overflow-hidden rounded-md text-white shadow-sm select-none',
         color,
         selected && 'ring-2 ring-amber-200',
-        !asset && !clip.text && 'bg-rose-900',
+        clip.groupId && 'outline outline-1 outline-amber-100/70',
+        !asset && !clip.text && !clip.shape && 'bg-rose-900',
+        track.locked && 'opacity-70',
       )}
       style={{ left: clip.start * pps, width: Math.max(8, clip.duration * pps) }}
       onPointerDown={(event) => begin(event, 'move')}
+      onDoubleClick={(event) => {
+        if (track.locked) return
+        event.stopPropagation()
+        const rect = event.currentTarget.getBoundingClientRect()
+        const ratio = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height))
+        addLaneKey(clip.id, clip.start + ((event.clientX - rect.left) / pps), lane === 'scale' ? 1 + (1 - ratio) * 3 : 1 - ratio)
+      }}
     >
       <div className="absolute inset-y-0 left-0 z-10 w-2 cursor-ew-resize" onPointerDown={(event) => begin(event, 'start')} />
       <div className="absolute inset-y-0 right-0 z-10 w-2 cursor-ew-resize" onPointerDown={(event) => begin(event, 'end')} />
@@ -372,6 +471,37 @@ function ClipBlock({
           </svg>
         )}
       </div>
+      {selected &&
+        laneKeys(clip, lane).map((key) => (
+          <button
+            key={`${key.time}:${key.value}`}
+            type="button"
+            aria-label="נקודת מפתח"
+            className="absolute z-20 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white bg-amber-300"
+            style={{ left: `${key.time * 100}%`, top: `${(1 - (lane === 'scale' ? (key.value - 1) / 3 : key.value)) * 100}%` }}
+            onPointerDown={(event) => {
+              event.stopPropagation()
+              if (track.locked) return
+              const host = event.currentTarget.parentElement
+              if (!host) return
+              const originTime = key.time
+              const move = (ev: PointerEvent) => {
+                const rect = host.getBoundingClientRect()
+                const nextTime = clip.start + ((ev.clientX - rect.left) / rect.width) * clip.duration
+                const ratio = 1 - (ev.clientY - rect.top) / rect.height
+                const value = lane === 'scale' ? 1 + Math.min(1, Math.max(0, ratio)) * 3 : Math.min(1, Math.max(0, ratio))
+                moveLaneKey(clip.id, originTime, nextTime, value)
+              }
+              const up = () => {
+                endGesture()
+                window.removeEventListener('pointermove', move)
+                window.removeEventListener('pointerup', up)
+              }
+              window.addEventListener('pointermove', move)
+              window.addEventListener('pointerup', up)
+            }}
+          />
+        ))}
       <span className="sr-only">{formatClock(clipEnd(clip) - clip.start)}</span>
     </div>
   )

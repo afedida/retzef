@@ -20,13 +20,24 @@ import {
   liveText,
   liveTransition,
   liveVolume,
+  applyTemplate,
+  assignLut,
+  easeLane,
+  exportSrtFile,
+  importLutText,
+  importSrtText,
+  jumpCutSelected,
+  patchClip,
   removeSelectedClip,
   removeVolumeKeys,
+  setCaptionLanguage,
+  setDuck,
   toggleTrackDuck,
+  transcribeSelected,
 } from '@/state/editor'
 import { useEditor } from '@/state/hooks'
 import { cn } from '@/lib/utils'
-import type { Clip, TextAlign, TextAnimation, TextFont, TransitionKind } from '@/types'
+import type { BlendMode, Clip, Ease, TextAlign, TextAnimation, TextFont, TransitionKind } from '@/types'
 
 const FONTS: { id: TextFont; label: string }[] = [
   { id: 'heebo', label: 'Heebo' },
@@ -124,7 +135,17 @@ export function Inspector({ className }: { className?: string }) {
                   suffix="x"
                   onChange={(value) => liveSpeed(clip.id, value)}
                 />
-                <p className="text-[11px] text-muted-foreground">הגובה של הצליל משתנה עם המהירות.</p>
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={clip.preservePitch !== false}
+                    onChange={(event) => {
+                      patchClip(clip.id, { preservePitch: event.target.checked })
+                      endGesture()
+                    }}
+                  />
+                  שמירת גובה הצליל
+                </label>
               </>
             )}
             {!clip.text && asset && asset.kind !== 'audio' && (
@@ -190,6 +211,7 @@ export function Inspector({ className }: { className?: string }) {
               suffix="s"
               onChange={(value) => liveFade(clip.id, 'fadeOut', value)}
             />
+            <Tools clip={clip} />
             <Button type="button" variant="destructive" size="sm" onClick={removeSelectedClip}>
               מחיקת הקליפ
             </Button>
@@ -414,7 +436,7 @@ function SliderField({
   min: number
   max: number
   step?: number
-  suffix: string
+  suffix?: string
   onChange: (value: number) => void
 }) {
   return (
@@ -423,7 +445,7 @@ function SliderField({
         <Label>{label}</Label>
         <span dir="ltr" className="font-mono text-muted-foreground">
           {Number.isInteger(step) ? Math.round(value) : value.toFixed(2)}
-          {suffix}
+          {suffix ?? ''}
         </span>
       </div>
       <Slider
@@ -437,6 +459,150 @@ function SliderField({
         }}
         onValueCommit={() => endGesture()}
       />
+    </div>
+  )
+}
+
+const BLENDS: { id: BlendMode; label: string }[] = [
+  { id: 'normal', label: 'רגיל' },
+  { id: 'multiply', label: 'Multiply' },
+  { id: 'screen', label: 'Screen' },
+  { id: 'overlay', label: 'Overlay' },
+  { id: 'darken', label: 'Darken' },
+]
+
+const EASES: { id: Ease; label: string }[] = [
+  { id: 'linear', label: 'לינארי' },
+  { id: 'easeIn', label: 'האצה' },
+  { id: 'easeOut', label: 'האטה' },
+  { id: 'easeInOut', label: 'האצה והאטה' },
+]
+
+function Tools({ clip }: { clip: Clip }) {
+  const project = useEditor((state) => state.project)
+  const assets = useEditor((state) => state.assets)
+  const language = useEditor((state) => state.captionLanguage)
+  const lane = useEditor((state) => state.lane)
+  const hasImage = assets.some((asset) => asset.kind === 'image')
+  const readFile = (accept: string, onText: (name: string, text: string) => void) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = accept
+    input.onchange = () => {
+      const file = input.files?.[0]
+      if (!file) return
+      void file.text().then((text) => onText(file.name, text))
+    }
+    input.click()
+  }
+  return (
+    <div className="space-y-3">
+      <Separator />
+      <p className="text-xs font-medium">שכבה</p>
+      {!clip.text && (
+        <>
+          <SliderField label="שקיפות" value={Math.round((clip.opacity ?? 1) * 100)} min={0} max={100} suffix="%" onChange={(value) => patchClip(clip.id, { opacity: value / 100 })} />
+          <SelectField label="מיזוג" value={clip.blend ?? 'normal'} options={BLENDS} onChange={(blend) => patchClip(clip.id, { blend })} />
+          <SliderField label="פינות" value={Math.round((clip.frame?.radius ?? 0) * 100)} min={0} max={100} suffix="%" onChange={(value) => patchClip(clip.id, { frame: { ...clip.frame, radius: value / 100 } })} />
+          <SliderField label="מסגרת" value={clip.borderWidth ?? 0} min={0} max={24} step={1} suffix="px" onChange={(value) => patchClip(clip.id, { borderWidth: value })} />
+          <div className="grid grid-cols-2 gap-2">
+            <SliderField label="X" value={clip.frame?.x ?? 0} min={0} max={1} step={0.01} onChange={(value) => patchClip(clip.id, { frame: { ...clip.frame, x: value } })} />
+            <SliderField label="Y" value={clip.frame?.y ?? 0} min={0} max={1} step={0.01} onChange={(value) => patchClip(clip.id, { frame: { ...clip.frame, y: value } })} />
+            <SliderField label="רוחב" value={clip.frame?.w ?? 1} min={0.05} max={1} step={0.01} onChange={(value) => patchClip(clip.id, { frame: { ...clip.frame, w: value } })} />
+            <SliderField label="גובה" value={clip.frame?.h ?? 1} min={0.05} max={1} step={0.01} onChange={(value) => patchClip(clip.id, { frame: { ...clip.frame, h: value } })} />
+          </div>
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={clip.chroma?.enabled === true}
+              onChange={(event) => {
+                patchClip(clip.id, { chroma: { ...clip.chroma, enabled: event.target.checked } })
+                endGesture()
+              }}
+            />
+            מפתח צבע ירוק
+          </label>
+          {clip.chroma?.enabled && (
+            <SliderField
+              label="סף ירוק"
+              value={clip.chroma.threshold}
+              min={0.05}
+              max={1}
+              step={0.01}
+              onChange={(value) => patchClip(clip.id, { chroma: { ...clip.chroma, threshold: value } })}
+            />
+          )}
+          <SelectField
+            label="LUT"
+            value={clip.lutId ?? 'none'}
+            options={[{ id: 'none', label: 'בלי LUT' }, ...project.luts.map((lut) => ({ id: lut.id, label: lut.name }))]}
+            onChange={(lutId) => assignLut(lutId === 'none' ? null : lutId)}
+          />
+          <Button type="button" size="sm" variant="outline" onClick={() => readFile('.cube,text/plain', (name, text) => importLutText(name, text))}>
+            ייבוא LUT
+          </Button>
+        </>
+      )}
+      <SelectField
+        label="החלקת נקודות"
+        value={clip.keys?.[lane]?.[0]?.ease ?? clip.volumeKeys[0]?.ease ?? 'linear'}
+        options={EASES}
+        onChange={(ease) => easeLane(ease)}
+      />
+      <p className="text-[11px] text-muted-foreground">ההחלקה חלה על נקודות הערוץ {lane} בקליפ הנבחר. לחיצה כפולה על הקליפ מוסיפה נקודה.</p>
+      {clip.assetId && (
+        <>
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={clip.denoise === true} onChange={(event) => { patchClip(clip.id, { denoise: event.target.checked }); endGesture() }} />
+            הפחתת רעש
+          </label>
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={clip.normalize === true} onChange={(event) => { patchClip(clip.id, { normalize: event.target.checked }); endGesture() }} />
+            נרמול ל־‎-14 LUFS
+          </label>
+          <Button type="button" size="sm" variant="outline" onClick={() => void jumpCutSelected()}>
+            ג'אמפ קאט לשתיקות
+          </Button>
+        </>
+      )}
+      <Separator />
+      <p className="text-xs font-medium">כתוביות אוטומטיות</p>
+      <SelectField
+        label="שפה"
+        value={language}
+        options={[
+          { id: 'hebrew', label: 'עברית' },
+          { id: 'english', label: 'English' },
+        ]}
+        onChange={(value) => setCaptionLanguage(value)}
+      />
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" size="sm" variant="secondary" disabled={!clip.assetId} onClick={() => void transcribeSelected()}>
+          תמלול
+        </Button>
+        <Button type="button" size="sm" variant="outline" onClick={() => readFile('.srt,text/plain', (_name, text) => importSrtText(text))}>
+          ייבוא SRT
+        </Button>
+        <Button type="button" size="sm" variant="outline" onClick={exportSrtFile}>
+          ייצוא SRT
+        </Button>
+      </div>
+      <Separator />
+      <p className="text-xs font-medium">תבניות</p>
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" size="sm" variant="outline" onClick={() => applyTemplate('lower')}>שליש תחתון</Button>
+        <Button type="button" size="sm" variant="outline" onClick={() => applyTemplate('intro')}>פתיח</Button>
+        <Button type="button" size="sm" variant="outline" onClick={() => applyTemplate('outro')}>סיום</Button>
+        <Button type="button" size="sm" variant="outline" onClick={() => applyTemplate('rect')}>מלבן</Button>
+        <Button type="button" size="sm" variant="outline" onClick={() => applyTemplate('ellipse')}>אליפסה</Button>
+        <Button type="button" size="sm" variant="outline" onClick={() => applyTemplate('star')}>כוכב</Button>
+        <Button type="button" size="sm" variant="outline" disabled={!hasImage} onClick={() => applyTemplate('watermark')}>סימן מים</Button>
+      </div>
+      <Separator />
+      <p className="text-xs font-medium">הנמכת מוזיקה</p>
+      <SliderField label="עוצמת הנמכה" value={Math.round((project.duckAmount ?? 0.72) * 100)} min={0} max={100} suffix="%" onChange={(value) => setDuck({ duckAmount: value / 100 })} />
+      <SliderField label="התקפה" value={project.duckAttack ?? 0.08} min={0} max={1} step={0.01} suffix="s" onChange={(value) => setDuck({ duckAttack: value })} />
+      <SliderField label="שחרור" value={project.duckRelease ?? 0.28} min={0} max={1.5} step={0.01} suffix="s" onChange={(value) => setDuck({ duckRelease: value })} />
     </div>
   )
 }

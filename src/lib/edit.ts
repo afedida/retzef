@@ -1,17 +1,29 @@
+import { sampleLane } from '@/lib/keyframes'
 import {
+  DEFAULT_CHROMA,
   DEFAULT_COLOR,
+  DEFAULT_FRAME,
   DEFAULT_KEN,
   DEFAULT_TRACKS,
   MAX_SPEED,
   MIN_CLIP,
   MIN_SPEED,
+  emptyKeys,
   type Asset,
+  type BlendMode,
   type Clip,
+  type ClipKeys,
   type ColorGrade,
+  type Ease,
+  type FrameBox,
   type KenBurns,
+  type KeyLane,
+  type Keyframe,
+  type Lut,
   type Marker,
   type MediaKind,
   type Project,
+  type ShapeKind,
   type TextAlign,
   type TextAnimation,
   type TextFont,
@@ -40,6 +52,11 @@ export function blankProject(): Project {
     clips: [],
     markers: [],
     masterVolume: 1,
+    ripple: false,
+    luts: [],
+    duckAmount: 0.72,
+    duckAttack: 0.08,
+    duckRelease: 0.28,
   }
 }
 
@@ -78,18 +95,75 @@ export function defaultText(): TextStyle {
   }
 }
 
-function mediaDefaults(): Pick<Clip, 'speed' | 'transition' | 'volumeKeys' | 'kenBurns' | 'color'> {
+function mediaDefaults(): Pick<
+  Clip,
+  | 'speed'
+  | 'transition'
+  | 'volumeKeys'
+  | 'kenBurns'
+  | 'color'
+  | 'opacity'
+  | 'blend'
+  | 'borderWidth'
+  | 'borderColor'
+  | 'chroma'
+  | 'frame'
+  | 'keys'
+  | 'groupId'
+  | 'shape'
+  | 'shapeFill'
+  | 'lutId'
+  | 'preservePitch'
+  | 'denoise'
+  | 'normalize'
+> {
   return {
     speed: 1,
     transition: null,
     volumeKeys: [],
     kenBurns: defaultKen(),
     color: defaultColor(),
+    opacity: 1,
+    blend: 'normal',
+    borderWidth: 0,
+    borderColor: '#ffffff',
+    chroma: { ...DEFAULT_CHROMA },
+    frame: { ...DEFAULT_FRAME },
+    keys: emptyKeys(),
+    groupId: null,
+    shape: null,
+    shapeFill: '#f59e0b',
+    lutId: null,
+    preservePitch: true,
+    denoise: false,
+    normalize: false,
+  }
+}
+
+export function freshClip(partial: Partial<Clip> & Pick<Clip, 'id'>): Clip {
+  return {
+    trackId: 'v1',
+    assetId: 'asset-1',
+    start: 0,
+    duration: 4,
+    inPoint: 0,
+    volume: 1,
+    fadeIn: 0,
+    fadeOut: 0,
+    text: null,
+    ...mediaDefaults(),
+    ...partial,
+    keys: partial.keys ?? emptyKeys(),
+    chroma: partial.chroma ?? { ...DEFAULT_CHROMA },
+    frame: partial.frame ?? { ...DEFAULT_FRAME },
+    kenBurns: partial.kenBurns ?? defaultKen(),
+    color: partial.color ?? defaultColor(),
   }
 }
 
 export function clipTrackType(clip: Clip, assets: Map<string, Asset>): TrackType | null {
   if (clip.text) return 'text'
+  if (clip.shape) return 'video'
   if (!clip.assetId) return null
   const asset = assets.get(clip.assetId)
   if (!asset) return null
@@ -171,10 +245,15 @@ export function fadeEnvelope(
   return Math.min(1, Math.max(0, gain))
 }
 
-export function keyedVolume(clip: Pick<Clip, 'volume' | 'volumeKeys' | 'duration'>, localTime: number): number {
+export function keyedVolume(
+  clip: Pick<Clip, 'volume' | 'volumeKeys' | 'duration'> & { keys?: ClipKeys },
+  localTime: number,
+): number {
+  const t = clip.duration > 0 ? localTime / clip.duration : 0
+  const rich = clip.keys?.volume
+  if (rich && rich.length) return Math.max(0, sampleLane(rich, t, clip.volume))
   const keys = [...(clip.volumeKeys ?? [])].sort((a, b) => a.time - b.time)
   if (!keys.length) return Math.max(0, clip.volume)
-  const t = clip.duration > 0 ? localTime / clip.duration : 0
   const first = keys[0]!
   if (t <= first.time) return Math.max(0, first.value)
   const last = keys[keys.length - 1]!
@@ -184,8 +263,15 @@ export function keyedVolume(clip: Pick<Clip, 'volume' | 'volumeKeys' | 'duration
     const left = keys[index - 1]!
     if (t <= right.time) {
       const span = Math.max(1e-6, right.time - left.time)
-      const mix = (t - left.time) / span
-      return Math.max(0, left.value + (right.value - left.value) * mix)
+      const mix = sampleLane(
+        [
+          { time: 0, value: left.value, ease: left.ease ?? 'linear' },
+          { time: 1, value: right.value, ease: 'linear' },
+        ],
+        (t - left.time) / span,
+        left.value,
+      )
+      return Math.max(0, mix)
     }
   }
   return Math.max(0, last.value)
@@ -304,6 +390,10 @@ function replaceClip(project: Project, clip: Clip): Project {
   return { ...project, clips: project.clips.map((item) => (item.id === clip.id ? clip : item)) }
 }
 
+function trackById(project: Project, trackId: string): Track | undefined {
+  return project.tracks.find((item) => item.id === trackId)
+}
+
 export function moveClip(
   project: Project,
   clipId: string,
@@ -312,17 +402,41 @@ export function moveClip(
   points: number[],
   threshold: number,
   assets: Map<string, Asset>,
+  companionIds: string[] = [],
 ): Project {
   const clip = project.clips.find((item) => item.id === clipId)
   if (!clip) return project
+  if (trackById(project, clip.trackId)?.locked) return project
   const kind = clipTrackType(clip, assets)
   const track = project.tracks.find((item) => item.id === desiredTrackId)
-  const trackId = track && kind && track.type === kind ? track.id : clip.trackId
-  const others = project.clips.filter((item) => item.trackId === trackId && item.id !== clip.id)
+  const trackId = track && kind && track.type === kind && !track.locked ? track.id : clip.trackId
+  const companions = new Set(
+    project.clips
+      .filter((item) => item.id !== clip.id && (companionIds.includes(item.id) || (clip.groupId && item.groupId === clip.groupId)))
+      .filter((item) => !trackById(project, item.trackId)?.locked)
+      .map((item) => item.id),
+  )
+  const others = project.clips.filter((item) => item.trackId === trackId && item.id !== clip.id && !companions.has(item.id))
   let start = Math.max(0, desiredStart)
   start = snapMove(start, clip.duration, points, threshold)
-  start = resolveStart(others, start, clip.duration)
-  return replaceClip(project, { ...clip, start, trackId })
+  if (!project.ripple) start = resolveStart(others, start, clip.duration)
+  let delta = start - clip.start
+  if (companions.size) {
+    for (const item of project.clips) {
+      if (!companions.has(item.id)) continue
+      if (item.start + delta < 0) delta = Math.max(delta, -item.start)
+    }
+    start = clip.start + delta
+  }
+  const nextClips = project.clips.map((item) => {
+    if (item.id === clip.id) return { ...item, start, trackId }
+    if (companions.has(item.id)) return { ...item, start: item.start + delta }
+    if (project.ripple && item.trackId === clip.trackId && item.start >= clipEnd(clip) - 1e-4 && !companions.has(item.id)) {
+      return { ...item, start: Math.max(0, item.start + delta) }
+    }
+    return item
+  })
+  return { ...project, clips: nextClips }
 }
 
 export function trimClip(
@@ -336,6 +450,7 @@ export function trimClip(
 ): Project {
   const clip = project.clips.find((item) => item.id === clipId)
   if (!clip) return project
+  if (trackById(project, clip.trackId)?.locked) return project
   const neighbors = project.clips.filter((item) => item.trackId === clip.trackId && item.id !== clip.id)
   const sourced = isSourcedMedia(clip, asset)
   const speed = clampSpeed(clip.speed)
@@ -369,15 +484,15 @@ export function trimClip(
   return replaceClip(project, withFades({ ...clip, start, duration, inPoint }))
 }
 
-function splitKeys(keys: VolumeKeyframe[], leftRatio: number): { left: VolumeKeyframe[]; right: VolumeKeyframe[] } {
+function splitLane<T extends { time: number }>(keys: T[], leftRatio: number): { left: T[]; right: T[] } {
   if (!keys.length) return { left: [], right: [] }
   const ratio = Math.min(0.999, Math.max(0.001, leftRatio))
   const left = keys
     .filter((key) => key.time <= ratio + 1e-6)
-    .map((key) => ({ time: Math.min(1, key.time / ratio), value: key.value }))
+    .map((key) => ({ ...key, time: Math.min(1, key.time / ratio) }))
   const right = keys
     .filter((key) => key.time >= ratio - 1e-6)
-    .map((key) => ({ time: Math.max(0, (key.time - ratio) / (1 - ratio)), value: key.value }))
+    .map((key) => ({ ...key, time: Math.max(0, (key.time - ratio) / (1 - ratio)) }))
   return { left, right }
 }
 
@@ -400,9 +515,28 @@ export function splitClip(project: Project, clipId: string, time: number): { pro
   const rightDuration = clip.duration - leftDuration
   const ratio = leftDuration / clip.duration
   const rightId = crypto.randomUUID()
-  const keys = splitKeys(clip.volumeKeys, ratio)
+  const keys = splitLane(clip.volumeKeys, ratio)
+  const lanes = {
+    volume: splitLane(clip.keys?.volume ?? [], ratio),
+    opacity: splitLane(clip.keys?.opacity ?? [], ratio),
+    scale: splitLane(clip.keys?.scale ?? [], ratio),
+    x: splitLane(clip.keys?.x ?? [], ratio),
+    y: splitLane(clip.keys?.y ?? [], ratio),
+  }
   const ken = splitKen(clip.kenBurns, ratio)
-  const left = withFades({ ...clip, duration: leftDuration, volumeKeys: keys.left, kenBurns: ken.left })
+  const left = withFades({
+    ...clip,
+    duration: leftDuration,
+    volumeKeys: keys.left,
+    kenBurns: ken.left,
+    keys: {
+      volume: lanes.volume.left,
+      opacity: lanes.opacity.left,
+      scale: lanes.scale.left,
+      x: lanes.x.left,
+      y: lanes.y.left,
+    },
+  })
   const right = withFades({
     ...clip,
     id: rightId,
@@ -414,6 +548,15 @@ export function splitClip(project: Project, clipId: string, time: number): { pro
     volumeKeys: keys.right,
     kenBurns: ken.right,
     color: { ...clip.color },
+    chroma: { ...clip.chroma },
+    frame: { ...clip.frame },
+    keys: {
+      volume: lanes.volume.right,
+      opacity: lanes.opacity.right,
+      scale: lanes.scale.right,
+      x: lanes.x.right,
+      y: lanes.y.right,
+    },
   })
   return {
     newId: rightId,
@@ -471,7 +614,16 @@ export function setClipEnd(project: Project, clipId: string, end: number, asset:
 
 export function addTextTrack(project: Project): Project {
   const count = project.tracks.filter((track) => track.type === 'text').length + 1
-  const track: Track = { id: crypto.randomUUID(), type: 'text', name: `טקסט ${count}`, duck: false }
+  const track: Track = {
+    id: crypto.randomUUID(),
+    type: 'text',
+    name: `טקסט ${count}`,
+    duck: false,
+    locked: false,
+    muted: false,
+    solo: false,
+    hidden: false,
+  }
   const insertAt = project.tracks.findIndex((item) => item.type === 'audio')
   const tracks = [...project.tracks]
   tracks.splice(insertAt === -1 ? tracks.length : insertAt, 0, track)
@@ -597,19 +749,65 @@ function coerceTransition(value: unknown): Transition | null {
   return { kind: raw.kind as TransitionKind, duration: Math.min(2, Math.max(0.1, finite(raw.duration, 0.5))) }
 }
 
+const EASES: Ease[] = ['linear', 'easeIn', 'easeOut', 'easeInOut']
+const BLENDS: BlendMode[] = ['normal', 'multiply', 'screen', 'overlay', 'darken']
+const SHAPES: ShapeKind[] = ['rect', 'ellipse', 'star', 'lower-third']
+
+function coerceEase(value: unknown): Ease {
+  return EASES.includes(value as Ease) ? (value as Ease) : 'linear'
+}
+
 function coerceKeys(value: unknown): VolumeKeyframe[] {
+  if (!Array.isArray(value)) return []
+  const keys: VolumeKeyframe[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const raw = item as Partial<VolumeKeyframe>
+    keys.push({
+      time: Math.min(1, Math.max(0, finite(raw.time, 0))),
+      value: Math.min(1, Math.max(0, finite(raw.value, 1))),
+      ease: coerceEase(raw.ease),
+    })
+  }
+  return keys.sort((a, b) => a.time - b.time)
+}
+
+function coerceLane(value: unknown, maxValue: number): Keyframe[] {
   if (!Array.isArray(value)) return []
   return value
     .map((item) => {
       if (!item || typeof item !== 'object') return null
-      const raw = item as Partial<VolumeKeyframe>
+      const raw = item as Partial<Keyframe>
       return {
         time: Math.min(1, Math.max(0, finite(raw.time, 0))),
-        value: Math.min(1, Math.max(0, finite(raw.value, 1))),
+        value: Math.min(maxValue, Math.max(0, finite(raw.value, 0))),
+        ease: coerceEase(raw.ease),
       }
     })
-    .filter((item): item is VolumeKeyframe => item !== null)
+    .filter((item): item is Keyframe => item !== null)
     .sort((a, b) => a.time - b.time)
+}
+
+function coerceClipKeys(value: unknown): ClipKeys {
+  const raw = (value && typeof value === 'object' ? value : {}) as Partial<ClipKeys>
+  return {
+    volume: coerceLane(raw.volume, 1),
+    opacity: coerceLane(raw.opacity, 1),
+    scale: coerceLane(raw.scale, 4).map((key) => ({ ...key, value: Math.max(1, key.value) })),
+    x: coerceLane(raw.x, 1),
+    y: coerceLane(raw.y, 1),
+  }
+}
+
+function coerceFrame(value: unknown): FrameBox {
+  const raw = (value && typeof value === 'object' ? value : {}) as Partial<FrameBox>
+  return {
+    x: Math.min(1, Math.max(0, finite(raw.x, 0))),
+    y: Math.min(1, Math.max(0, finite(raw.y, 0))),
+    w: Math.min(1, Math.max(0.02, finite(raw.w, 1))),
+    h: Math.min(1, Math.max(0.02, finite(raw.h, 1))),
+    radius: Math.min(1, Math.max(0, finite(raw.radius, 0))),
+  }
 }
 
 function coerceTracks(value: unknown): Track[] {
@@ -625,6 +823,10 @@ function coerceTracks(value: unknown): Track[] {
       type: raw.type,
       name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : raw.id,
       duck: raw.duck === true,
+      locked: raw.locked === true,
+      muted: raw.muted === true,
+      solo: raw.solo === true,
+      hidden: raw.hidden === true,
     })
   }
   if (!tracks.some((track) => track.type === 'video') || !tracks.some((track) => track.type === 'audio')) {
@@ -632,7 +834,16 @@ function coerceTracks(value: unknown): Track[] {
   }
   if (!tracks.some((track) => track.type === 'text')) {
     const audioAt = tracks.findIndex((track) => track.type === 'audio')
-    tracks.splice(audioAt === -1 ? tracks.length : audioAt, 0, { id: 't1', type: 'text', name: 'טקסט', duck: false })
+    tracks.splice(audioAt === -1 ? tracks.length : audioAt, 0, {
+      id: 't1',
+      type: 'text',
+      name: 'טקסט',
+      duck: false,
+      locked: false,
+      muted: false,
+      solo: false,
+      hidden: false,
+    })
   }
   return tracks
 }
@@ -645,13 +856,15 @@ function coerceClip(value: unknown, tracks: Track[]): Clip | null {
   if (!track) return null
   const text = track.type === 'text' ? coerceText(raw.text) : null
   if (track.type === 'text' && !text) return null
-  if (track.type !== 'text' && typeof raw.assetId !== 'string') return null
+  const shape = SHAPES.includes(raw.shape as ShapeKind) ? (raw.shape as ShapeKind) : null
+  if (track.type !== 'text' && typeof raw.assetId !== 'string' && !shape) return null
   const duration = Math.max(MIN_CLIP, finite(raw.duration, 1))
   const fades = clampFades(duration, finite(raw.fadeIn, 0), finite(raw.fadeOut, 0))
+  const chromaRaw = (raw.chroma && typeof raw.chroma === 'object' ? raw.chroma : {}) as Partial<Clip['chroma']>
   return {
     id: raw.id,
     trackId: raw.trackId,
-    assetId: track.type === 'text' ? null : (raw.assetId ?? null),
+    assetId: track.type === 'text' || (shape && typeof raw.assetId !== 'string') ? null : (raw.assetId ?? null),
     start: Math.max(0, finite(raw.start, 0)),
     duration,
     inPoint: Math.max(0, finite(raw.inPoint, 0)),
@@ -664,6 +877,25 @@ function coerceClip(value: unknown, tracks: Track[]): Clip | null {
     volumeKeys: coerceKeys(raw.volumeKeys),
     kenBurns: coerceKen(raw.kenBurns),
     color: coerceColor(raw.color),
+    opacity: Math.min(1, Math.max(0, finite(raw.opacity, 1))),
+    blend: BLENDS.includes(raw.blend as BlendMode) ? (raw.blend as BlendMode) : 'normal',
+    borderWidth: Math.min(64, Math.max(0, finite(raw.borderWidth, 0))),
+    borderColor: typeof raw.borderColor === 'string' ? raw.borderColor : '#ffffff',
+    chroma: {
+      enabled: chromaRaw.enabled === true,
+      color: typeof chromaRaw.color === 'string' ? chromaRaw.color : DEFAULT_CHROMA.color,
+      threshold: Math.min(1.2, Math.max(0.02, finite(chromaRaw.threshold, DEFAULT_CHROMA.threshold))),
+      softness: Math.min(1, Math.max(0.01, finite(chromaRaw.softness, DEFAULT_CHROMA.softness))),
+    },
+    frame: coerceFrame(raw.frame),
+    keys: coerceClipKeys(raw.keys),
+    groupId: typeof raw.groupId === 'string' ? raw.groupId : null,
+    shape: track.type === 'video' ? shape : null,
+    shapeFill: typeof raw.shapeFill === 'string' ? raw.shapeFill : '#f59e0b',
+    lutId: typeof raw.lutId === 'string' ? raw.lutId : null,
+    preservePitch: raw.preservePitch !== false,
+    denoise: raw.denoise === true,
+    normalize: raw.normalize === true,
   }
 }
 
@@ -698,7 +930,31 @@ export function coerceProject(value: unknown): Project | null {
     clips,
     markers: coerceMarkers(raw.markers),
     masterVolume: Math.min(1, Math.max(0, finite(raw.masterVolume, 1))),
+    ripple: raw.ripple === true,
+    luts: coerceLuts(raw.luts),
+    duckAmount: Math.min(1, Math.max(0, finite(raw.duckAmount, 0.72))),
+    duckAttack: Math.min(2, Math.max(0, finite(raw.duckAttack, 0.08))),
+    duckRelease: Math.min(2, Math.max(0, finite(raw.duckRelease, 0.28))),
   }
+}
+
+function coerceLuts(value: unknown): Lut[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null
+      const raw = item as Partial<Lut>
+      if (typeof raw.id !== 'string' || !Number.isInteger(raw.size) || !Array.isArray(raw.data)) return null
+      const size = raw.size as number
+      if (size < 2 || size > 64 || raw.data.length !== size * size * size * 3) return null
+      return {
+        id: raw.id,
+        name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : 'LUT',
+        size,
+        data: raw.data.map((sample) => (typeof sample === 'number' && Number.isFinite(sample) ? sample : 0)),
+      }
+    })
+    .filter((item): item is Lut => item !== null)
 }
 
 export function clipsTouching(project: Project, time: number): Clip[] {
@@ -708,8 +964,28 @@ export function clipsTouching(project: Project, time: number): Clip[] {
 export type DrawLayer = {
   clip: Clip
   local: number
+  sourceLocal: number
   opacity: number
   slide: number
+}
+
+export function trackShown(project: Project, trackId: string): boolean {
+  const track = project.tracks.find((item) => item.id === trackId)
+  if (!track || track.hidden) return false
+  const solos = project.tracks.some((item) => item.solo)
+  return !solos || track.solo
+}
+
+export function trackHeard(project: Project, trackId: string): boolean {
+  const track = project.tracks.find((item) => item.id === trackId)
+  if (!track || track.muted) return false
+  return trackShown(project, trackId)
+}
+
+function keyedOpacity(clip: Clip, local: number): number {
+  const progress = clip.duration > 0 ? local / clip.duration : 0
+  const base = clip.keys?.opacity?.length ? sampleLane(clip.keys.opacity, progress, clip.opacity ?? 1) : (clip.opacity ?? 1)
+  return Math.min(1, Math.max(0, base))
 }
 
 function clampedLocal(clip: Clip, time: number): number {
@@ -724,7 +1000,7 @@ export function adjacentTransition(previous: Clip | null, next: Clip): number {
 
 export function videoLayers(project: Project, time: number): DrawLayer[] {
   const layers: DrawLayer[] = []
-  const videoTracks = project.tracks.filter((track) => track.type === 'video')
+  const videoTracks = project.tracks.filter((track) => track.type === 'video' && trackShown(project, track.id))
   for (let index = videoTracks.length - 1; index >= 0; index--) {
     const track = videoTracks[index]
     if (!track) continue
@@ -745,8 +1021,15 @@ export function videoLayers(project: Project, time: number): DrawLayer[] {
       covered.add(outgoing.id)
       covered.add(incoming.id)
       const push = (clip: Clip, opacity: number, slide: number) => {
+        const sourceLocal = time - clip.start
         const local = clampedLocal(clip, time)
-        layers.push({ clip, local, opacity: opacity * fadeEnvelope(clip, local), slide })
+        layers.push({
+          clip,
+          local,
+          sourceLocal,
+          opacity: opacity * fadeEnvelope(clip, local) * keyedOpacity(clip, local),
+          slide,
+        })
       }
       if (kind === 'dip') {
         if (progress < 0.5) push(outgoing, 1 - progress * 2, 0)
@@ -763,7 +1046,13 @@ export function videoLayers(project: Project, time: number): DrawLayer[] {
       if (covered.has(clip.id)) continue
       if (time < clip.start || time >= clip.start + clip.duration) continue
       const local = time - clip.start
-      layers.push({ clip, local, opacity: fadeEnvelope(clip, local), slide: 0 })
+      layers.push({
+        clip,
+        local,
+        sourceLocal: local,
+        opacity: fadeEnvelope(clip, local) * keyedOpacity(clip, local),
+        slide: 0,
+      })
     }
   }
   return layers
@@ -771,4 +1060,205 @@ export function videoLayers(project: Project, time: number): DrawLayer[] {
 
 export function sourceTimeAt(clip: Clip, local: number): number {
   return Math.max(0, clip.inPoint + local * clampSpeed(clip.speed))
+}
+
+export function makeShapeClip(shape: ShapeKind, trackId: string, start: number, duration = 3): Clip {
+  const lower = shape === 'lower-third'
+  return {
+    id: crypto.randomUUID(),
+    trackId,
+    assetId: null,
+    start: Math.max(0, start),
+    duration,
+    inPoint: 0,
+    volume: 0,
+    fadeIn: 0.15,
+    fadeOut: 0.15,
+    text: null,
+    ...mediaDefaults(),
+    shape,
+    shapeFill: lower ? '#111827' : '#f59e0b',
+    opacity: lower ? 0.92 : 1,
+    frame: lower ? { x: 0, y: 0.72, w: 1, h: 0.22, radius: 0 } : { x: 0.7, y: 0.08, w: 0.22, h: 0.22, radius: 0.18 },
+  }
+}
+
+export function exciseLocalRanges(project: Project, clipId: string, ranges: { start: number; end: number }[]): Project {
+  const clip = project.clips.find((item) => item.id === clipId)
+  if (!clip || !ranges.length) return project
+  const merged: { start: number; end: number }[] = []
+  for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
+    const start = Math.max(0, Math.min(clip.duration, range.start))
+    const end = Math.max(start, Math.min(clip.duration, range.end))
+    if (end - start < 0.05) continue
+    const last = merged[merged.length - 1]
+    if (last && start <= last.end + 0.02) last.end = Math.max(last.end, end)
+    else merged.push({ start, end })
+  }
+  if (!merged.length) return project
+  const kept: { start: number; end: number }[] = []
+  let cursor = 0
+  for (const gap of merged) {
+    if (gap.start - cursor >= MIN_CLIP) kept.push({ start: cursor, end: gap.start })
+    cursor = gap.end
+  }
+  if (clip.duration - cursor >= MIN_CLIP) kept.push({ start: cursor, end: clip.duration })
+  if (!kept.length) return project
+  const removed = clip.duration - kept.reduce((total, part) => total + (part.end - part.start), 0)
+  const speed = clampSpeed(clip.speed)
+  const pieces = kept.map((part, index) => {
+    const duration = part.end - part.start
+    return withFades({
+      ...clip,
+      id: index === 0 ? clip.id : crypto.randomUUID(),
+      start: clip.start + part.start - kept.slice(0, index).reduce((total, item) => total + (item.end - item.start), 0) + kept.slice(0, index).reduce((total, item) => total + (item.end - item.start), 0) - part.start + part.start,
+      duration,
+      inPoint: clip.inPoint + part.start * speed,
+      transition: index === 0 ? clip.transition : null,
+      text: clip.text ? { ...clip.text } : null,
+    })
+  })
+  let placed = clip.start
+  const laid = pieces.map((piece) => {
+    const next = { ...piece, start: placed }
+    placed += piece.duration
+    return next
+  })
+  const oldEnd = clipEnd(clip)
+  return {
+    ...project,
+    clips: project.clips.flatMap((item) => {
+      if (item.id === clip.id) return laid
+      if (item.trackId === clip.trackId && item.start >= oldEnd - 1e-4) {
+        return [{ ...item, start: Math.max(0, item.start - removed) }]
+      }
+      return [item]
+    }),
+  }
+}
+
+export function groupClips(project: Project, ids: string[]): Project {
+  const chosen = project.clips.filter((clip) => ids.includes(clip.id))
+  if (chosen.length < 2) return project
+  const groupId = crypto.randomUUID()
+  return {
+    ...project,
+    clips: project.clips.map((clip) => (ids.includes(clip.id) ? { ...clip, groupId } : clip)),
+  }
+}
+
+export function ungroupClips(project: Project, ids: string[]): Project {
+  const groups = new Set(project.clips.filter((clip) => ids.includes(clip.id) && clip.groupId).map((clip) => clip.groupId))
+  if (!groups.size) return project
+  return {
+    ...project,
+    clips: project.clips.map((clip) => (clip.groupId && groups.has(clip.groupId) ? { ...clip, groupId: null } : clip)),
+  }
+}
+
+export function pasteClips(project: Project, copies: Clip[], at: number): { project: Project; ids: string[] } {
+  if (!copies.length) return { project, ids: [] }
+  const origin = Math.min(...copies.map((clip) => clip.start))
+  const shift = Math.max(0, at) - origin
+  const ids: string[] = []
+  let next = project
+  const ordered = [...copies].sort((a, b) => a.start - b.start)
+  for (const copy of ordered) {
+    const id = crypto.randomUUID()
+    ids.push(id)
+    const clip: Clip = {
+      ...copy,
+      id,
+      start: Math.max(0, copy.start + shift),
+      text: copy.text ? { ...copy.text } : null,
+      color: { ...copy.color },
+      kenBurns: { ...copy.kenBurns },
+      chroma: { ...copy.chroma },
+      frame: { ...copy.frame },
+      keys: {
+        volume: copy.keys.volume.map((key) => ({ ...key })),
+        opacity: copy.keys.opacity.map((key) => ({ ...key })),
+        scale: copy.keys.scale.map((key) => ({ ...key })),
+        x: copy.keys.x.map((key) => ({ ...key })),
+        y: copy.keys.y.map((key) => ({ ...key })),
+      },
+      volumeKeys: copy.volumeKeys.map((key) => ({ ...key })),
+      groupId: null,
+      transition: null,
+    }
+    next = insertClip(next, clip)
+  }
+  return { project: next, ids }
+}
+
+export function deleteClips(project: Project, ids: string[], ripple: boolean): Project {
+  const selected = new Set(ids)
+  if (!ripple) return { ...project, clips: project.clips.filter((clip) => !selected.has(clip.id)) }
+  const victims = project.clips.filter((clip) => selected.has(clip.id)).sort((a, b) => b.start - a.start)
+  let next = project
+  for (const clip of victims) next = rippleDelete(next, clip.id)
+  return next
+}
+
+export function setTrackFlag(project: Project, trackId: string, flag: 'locked' | 'muted' | 'solo' | 'hidden', value: boolean): Project {
+  return {
+    ...project,
+    tracks: project.tracks.map((track) => (track.id === trackId ? { ...track, [flag]: value } : track)),
+  }
+}
+
+export function setRippleMode(project: Project, ripple: boolean): Project {
+  return { ...project, ripple }
+}
+
+export function setDuckEnvelope(project: Project, patch: Partial<Pick<Project, 'duckAmount' | 'duckAttack' | 'duckRelease'>>): Project {
+  return {
+    ...project,
+    duckAmount: patch.duckAmount === undefined ? project.duckAmount : Math.min(1, Math.max(0, patch.duckAmount)),
+    duckAttack: patch.duckAttack === undefined ? project.duckAttack : Math.min(2, Math.max(0, patch.duckAttack)),
+    duckRelease: patch.duckRelease === undefined ? project.duckRelease : Math.min(2, Math.max(0, patch.duckRelease)),
+  }
+}
+
+export function addLut(project: Project, lut: Lut): Project {
+  return { ...project, luts: [...project.luts.filter((item) => item.id !== lut.id), lut] }
+}
+
+export function upsertLaneKey(project: Project, clipId: string, lane: KeyLane, time: number, value: number, ease: Ease = 'linear'): Project {
+  const clip = project.clips.find((item) => item.id === clipId)
+  if (!clip || clip.duration <= 0) return project
+  const local = Math.min(1, Math.max(0, (time - clip.start) / clip.duration))
+  const limits = lane === 'scale' ? { min: 1, max: 4 } : { min: 0, max: 1 }
+  const valueClamped = Math.min(limits.max, Math.max(limits.min, value))
+  const keys = clip.keys ?? emptyKeys()
+  const laneKeys = keys[lane].filter((key) => Math.abs(key.time - local) > 0.012)
+  const nextLane = [...laneKeys, { time: local, value: valueClamped, ease }].sort((a, b) => a.time - b.time)
+  const nextKeys = { ...keys, [lane]: nextLane }
+  if (lane === 'volume') {
+    const volumeKeys = nextLane.map((key) => ({ time: key.time, value: key.value, ease: key.ease }))
+    return updateClip(project, clipId, { keys: nextKeys, volumeKeys })
+  }
+  return updateClip(project, clipId, { keys: nextKeys })
+}
+
+export function setLaneEase(project: Project, clipId: string, lane: KeyLane, ease: Ease): Project {
+  const clip = project.clips.find((item) => item.id === clipId)
+  if (!clip) return project
+  const keys = clip.keys ?? emptyKeys()
+  const nextKeys = { ...keys, [lane]: keys[lane].map((key) => ({ ...key, ease })) }
+  if (lane === 'volume') {
+    return updateClip(project, clipId, {
+      keys: nextKeys,
+      volumeKeys: clip.volumeKeys.map((key) => ({ ...key, ease })),
+    })
+  }
+  return updateClip(project, clipId, { keys: nextKeys })
+}
+
+export function clearLane(project: Project, clipId: string, lane: KeyLane): Project {
+  const clip = project.clips.find((item) => item.id === clipId)
+  if (!clip) return project
+  const keys = { ...(clip.keys ?? emptyKeys()), [lane]: [] }
+  if (lane === 'volume') return updateClip(project, clipId, { keys, volumeKeys: [] })
+  return updateClip(project, clipId, { keys })
 }

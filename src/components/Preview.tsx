@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { ImageDown, Pause, Play, SkipBack } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { getUrl } from '@/lib/blobs'
-import { audibleClips, loadAudioBuffer, schedulePreviewGain } from '@/lib/audio'
+import { analyzeSpeech, audibleClips, clipPlaybackBuffer, loadAudioBuffer, schedulePreviewGain } from '@/lib/audio'
 import { clampSpeed, projectDuration, sourceTimeAt, updateText, videoLayers } from '@/lib/edit'
 import { paintFrame, type Visual } from '@/lib/paint'
 import { formatTimecode } from '@/lib/time'
@@ -60,15 +60,17 @@ class PreviewMixer {
       if (offset >= buffer.duration) continue
       const playFor = Math.min((clip.duration - Math.max(0, local)) * speed, buffer.duration - offset)
       if (playFor <= 0.01) continue
+      const playback = await clipPlaybackBuffer(clip, buffer, offset, playFor)
+      if (token !== this.token) return
       const source = ctx.createBufferSource()
-      source.buffer = buffer
-      source.playbackRate.value = speed
+      source.buffer = playback.buffer
+      source.playbackRate.value = playback.rate
       const gain = ctx.createGain()
       schedulePreviewGain(gain.gain, project, assets, clip, time, now)
       source.connect(gain)
       gain.connect(ctx.destination)
       const when = local < 0 ? now + (clip.start - time) : now
-      source.start(when, offset, playFor)
+      source.start(when, playback.offset, playback.span)
       this.nodes.push(source)
     }
   }
@@ -106,6 +108,7 @@ export function Preview() {
       const asset = assets.find((item) => item.id === clip.assetId)
       if (asset?.hasAudio && clip.assetId) void loadAudioBuffer(clip.assetId)
     }
+    void analyzeSpeech(project, assets)
   }, [project, assets])
 
   useEffect(() => {
@@ -156,7 +159,8 @@ export function Preview() {
       const ctx = canvas.getContext('2d')
       if (!ctx) return
       const currentProject = projectRef.current
-      const time = getPlayhead()
+      const fpsNow = presetById(getState().exportPreset).fps
+      const time = Math.floor(getPlayhead() * fpsNow + 1e-4) / fpsNow
       const playingNow = isPlaying()
       const assetsNow = assetById()
       const active = new Set<string>()
@@ -174,7 +178,7 @@ export function Preview() {
           if (!video.paused) video.pause()
           continue
         }
-        const sourceTime = sourceTimeAt(clip, layer ? layer.local : Math.max(0, local))
+        const sourceTime = sourceTimeAt(clip, layer ? layer.sourceLocal : local)
         if (video.playbackRate !== clampSpeed(clip.speed)) video.playbackRate = clampSpeed(clip.speed)
         if (video.readyState >= 1 && Math.abs(video.currentTime - sourceTime) > (playingNow ? 0.2 : 0.04)) {
           try {
@@ -213,7 +217,8 @@ export function Preview() {
 
       paintFrame(ctx, currentProject, time, visualFor, selectedRef.current)
       if (timecodeRef.current) {
-        timecodeRef.current.textContent = `${formatTimecode(time)} / ${formatTimecode(projectDuration(currentProject))}`
+        const fps = presetById(getState().exportPreset).fps
+        timecodeRef.current.textContent = `${formatTimecode(time, fps)} / ${formatTimecode(projectDuration(currentProject), fps)}`
       }
     }
 

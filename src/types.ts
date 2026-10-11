@@ -13,6 +13,11 @@ export type TextFont = 'heebo' | 'rubik' | 'assistant' | 'frank'
 export type TextAlign = 'start' | 'center' | 'end'
 export type TextAnimation = 'none' | 'fade' | 'slide'
 export type TransitionKind = 'crossfade' | 'dip' | 'slide'
+export type Ease = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut'
+export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'darken'
+export type ShapeKind = 'rect' | 'ellipse' | 'star' | 'lower-third'
+export type KeyLane = 'volume' | 'opacity' | 'scale' | 'x' | 'y'
+export type CaptionLanguage = 'hebrew' | 'english'
 
 export type ExportPresetId = '1080p30' | '1080p60' | '720p30' | 'shorts'
 
@@ -87,6 +92,43 @@ export type ColorGrade = {
 export type VolumeKeyframe = {
   time: number
   value: number
+  ease?: Ease
+}
+
+export type Keyframe = {
+  time: number
+  value: number
+  ease: Ease
+}
+
+export type ClipKeys = {
+  volume: Keyframe[]
+  opacity: Keyframe[]
+  scale: Keyframe[]
+  x: Keyframe[]
+  y: Keyframe[]
+}
+
+export type FrameBox = {
+  x: number
+  y: number
+  w: number
+  h: number
+  radius: number
+}
+
+export type Chroma = {
+  enabled: boolean
+  color: string
+  threshold: number
+  softness: number
+}
+
+export type Lut = {
+  id: string
+  name: string
+  size: number
+  data: number[]
 }
 
 export type Clip = {
@@ -105,6 +147,20 @@ export type Clip = {
   volumeKeys: VolumeKeyframe[]
   kenBurns: KenBurns
   color: ColorGrade
+  opacity: number
+  blend: BlendMode
+  borderWidth: number
+  borderColor: string
+  chroma: Chroma
+  frame: FrameBox
+  keys: ClipKeys
+  groupId: string | null
+  shape: ShapeKind | null
+  shapeFill: string
+  lutId: string | null
+  preservePitch: boolean
+  denoise: boolean
+  normalize: boolean
 }
 
 export type Track = {
@@ -112,6 +168,10 @@ export type Track = {
   type: TrackType
   name: string
   duck: boolean
+  locked: boolean
+  muted: boolean
+  solo: boolean
+  hidden: boolean
 }
 
 export type Marker = {
@@ -128,6 +188,11 @@ export type Project = {
   clips: Clip[]
   markers: Marker[]
   masterVolume: number
+  ripple: boolean
+  luts: Lut[]
+  duckAmount: number
+  duckAttack: number
+  duckRelease: number
 }
 
 export const DEFAULT_KEN: KenBurns = {
@@ -145,12 +210,27 @@ export const DEFAULT_COLOR: ColorGrade = {
   saturation: 1,
 }
 
+export const DEFAULT_FRAME: FrameBox = { x: 0, y: 0, w: 1, h: 1, radius: 0 }
+
+export const DEFAULT_CHROMA: Chroma = {
+  enabled: false,
+  color: '#00ff00',
+  threshold: 0.42,
+  softness: 0.16,
+}
+
+export function emptyKeys(): ClipKeys {
+  return { volume: [], opacity: [], scale: [], x: [], y: [] }
+}
+
+const TRACK_FLAGS = { locked: false, muted: false, solo: false, hidden: false }
+
 export const DEFAULT_TRACKS: Track[] = [
-  { id: 'v2', type: 'video', name: 'וידאו 2', duck: false },
-  { id: 'v1', type: 'video', name: 'וידאו 1', duck: false },
-  { id: 't1', type: 'text', name: 'טקסט', duck: false },
-  { id: 'a1', type: 'audio', name: 'שמע', duck: false },
-  { id: 'a2', type: 'audio', name: 'מוזיקה', duck: false },
+  { id: 'v2', type: 'video', name: 'וידאו 2', duck: false, ...TRACK_FLAGS },
+  { id: 'v1', type: 'video', name: 'וידאו 1', duck: false, ...TRACK_FLAGS },
+  { id: 't1', type: 'text', name: 'טקסט', duck: false, ...TRACK_FLAGS },
+  { id: 'a1', type: 'audio', name: 'שמע', duck: false, ...TRACK_FLAGS },
+  { id: 'a2', type: 'audio', name: 'מוזיקה', duck: false, ...TRACK_FLAGS },
 ]
 
 export type ProjectFile = {

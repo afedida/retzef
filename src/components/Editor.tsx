@@ -6,10 +6,9 @@ import { Preview } from '@/components/Preview'
 import { Timeline } from '@/components/Timeline'
 import { TopBar } from '@/components/TopBar'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { deleteSelectedMarker, downloadProjectFile, getState, importFiles, nudgeSelectedClip, placeMarker, redo, removeSelectedClip, rippleSelectedClip, seek, setPps, splitAtPlayhead, togglePlay, undo } from '@/state/editor'
+import { presetById } from '@/types'
+import { copySelection, deleteSelectedMarker, downloadProjectFile, getState, groupSelection, importFiles, nudgeSelectedClip, pasteSelection, placeMarker, redo, removeSelectedClip, rippleSelectedClip, seek, setPps, splitAtPlayhead, togglePlay, undo, ungroupSelection } from '@/state/editor'
 import { useEditor } from '@/state/hooks'
-
-const FRAME = 1 / 30
 
 export function Editor() {
   const ready = useEditor((state) => state.ready)
@@ -56,6 +55,22 @@ export function Editor() {
         redo()
         return
       }
+      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyC' && !typing) {
+        event.preventDefault()
+        copySelection()
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyV' && !typing) {
+        event.preventDefault()
+        pasteSelection()
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyG' && !typing) {
+        event.preventDefault()
+        if (event.shiftKey) ungroupSelection()
+        else groupSelection()
+        return
+      }
       if (getState().exportOpen && !(event.ctrlKey || event.metaKey)) return
       if (typing) return
       if (event.code === 'Space') {
@@ -71,7 +86,7 @@ export function Editor() {
       } else if (event.code === 'ArrowLeft' || event.code === 'ArrowRight') {
         event.preventDefault()
         const direction = event.code === 'ArrowLeft' ? -1 : 1
-        nudgeSelectedClip(direction * (event.shiftKey ? 1 : FRAME))
+        nudgeSelectedClip(direction * (event.shiftKey ? 1 : 1 / presetById(getState().exportPreset).fps))
       } else if (event.code === 'KeyM') {
         placeMarker()
       } else if (event.code === 'Home') {

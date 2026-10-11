@@ -190,8 +190,9 @@ export async function exportProject(
       }
       const sink = new CanvasSink(track)
       const speed = clip.speed > 0 ? clip.speed : 1
-      const start = Math.max(0, clip.inPoint - 0.2)
-      const end = clip.inPoint + clip.duration * speed + 0.15
+      const handle = Math.max(2, (clip.transition?.duration ?? 0) + 0.5) * speed
+      const start = Math.max(0, clip.inPoint - handle)
+      const end = clip.inPoint + clip.duration * speed + handle
       opened.push({
         clip,
         width: asset.width || track.displayWidth || preset.width,
@@ -228,7 +229,7 @@ export async function exportProject(
       for (const cursor of opened) {
         const layer = layers.find((item) => item.clip.id === cursor.clip.id)
         if (!layer) continue
-        await advanceCursor(cursor, sourceTimeAt(cursor.clip, layer.local))
+        await advanceCursor(cursor, sourceTimeAt(cursor.clip, layer.sourceLocal))
       }
       paintFrame(
         ctx,

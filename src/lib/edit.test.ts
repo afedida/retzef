@@ -23,28 +23,11 @@ import {
   splitClip,
   trimClip,
   videoLayers,
-  defaultColor,
-  defaultKen,
+  freshClip,
 } from '@/lib/edit'
 
 function clip(partial: Partial<Clip> & Pick<Clip, 'id'>): Clip {
-  return {
-    trackId: 'v1',
-    assetId: 'asset-1',
-    start: 0,
-    duration: 4,
-    inPoint: 0,
-    volume: 1,
-    fadeIn: 0,
-    fadeOut: 0,
-    text: null,
-    speed: 1,
-    transition: null,
-    volumeKeys: [],
-    kenBurns: defaultKen(),
-    color: defaultColor(),
-    ...partial,
-  }
+  return freshClip(partial)
 }
 
 function project(clips: Clip[]): Project {

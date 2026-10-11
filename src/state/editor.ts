@@ -1,4 +1,5 @@
-import { forgetAudio, peakEnvelope } from '@/lib/audio'
+import { loadAudioBuffer, peakEnvelope, forgetAudio } from '@/lib/audio'
+import { transcribePcm } from '@/lib/captions'
 import { dropBlob, getBlob, getUrl, putBlob } from '@/lib/blobs'
 import { deleteStoredAsset, loadStoredAssets, loadStoredProject, saveAsset, saveProject } from '@/lib/db'
 import {
@@ -8,41 +9,58 @@ import {
   clearVolumeKeys,
   clipsTouching,
   coerceProject,
-  deleteClip,
+  addLut,
+  deleteClips,
   deleteClipsForAsset,
+  exciseLocalRanges,
+  groupClips,
   insertClip,
   makeMediaClip,
   makeTextClip,
   moveClip,
+  pasteClips,
   preferredTrack,
   projectDuration,
   referencedAssetIds,
   removeMarker,
   removeTextTrack,
-  rippleDelete,
   setClipEnd,
   setClipStart,
+  setDuckEnvelope,
+  setLaneEase,
   setMasterVolume,
+  setRippleMode,
   setSpeed,
   setTrackDuck,
+  setTrackFlag,
   setTransition,
   snapPoints,
   splitClip,
   trimClip,
+  ungroupClips,
   updateClip,
   updateText,
+  upsertLaneKey,
   upsertVolumeKey,
 } from '@/lib/edit'
+import { parseCube } from '@/lib/lut'
+import { cuesToSrt, parseSrt } from '@/lib/srt'
+import { addIntro, addLowerThird, addOutro, addSticker, addWatermark } from '@/lib/templates'
+import { silentGaps } from '@/lib/vad'
 import { captureImageThumbnail, captureVideoThumbnail, probeFile, readProjectFile } from '@/lib/media'
 import { packProject, unpackProject } from '@/lib/package'
-import { OUTPUT_FPS, type Asset, type ExportPresetId, type KenBurns, type ColorGrade, type Project, type TextStyle, type Transition } from '@/types'
+import { presetById, type Asset, type CaptionLanguage, type Clip, type Ease, type ExportPresetId, type KenBurns, type ColorGrade, type KeyLane, type Project, type ShapeKind, type TextStyle, type Transition } from '@/types'
 
 export type EditorState = {
   ready: boolean
   project: Project
   assets: Asset[]
   selectedClipId: string | null
+  selectedClipIds: string[]
   selectedAssetId: string | null
+  lane: KeyLane
+  status: string | null
+  captionLanguage: CaptionLanguage
   snap: boolean
   pps: number
   importError: string | null
@@ -69,7 +87,11 @@ const state: EditorState = {
   project: blankProject(),
   assets: [],
   selectedClipId: null,
+  selectedClipIds: [],
   selectedAssetId: null,
+  lane: 'volume',
+  status: null,
+  captionLanguage: 'hebrew',
   snap: true,
   pps: 72,
   importError: null,
@@ -151,8 +173,9 @@ function commit(mutator: (project: Project) => Project) {
   if (history.past.length > 80) history.past.shift()
   history.future = []
   state.project = next
+  state.selectedClipIds = state.selectedClipIds.filter((id) => next.clips.some((clip) => clip.id === id))
   if (state.selectedClipId && !next.clips.some((clip) => clip.id === state.selectedClipId)) {
-    state.selectedClipId = null
+    state.selectedClipId = state.selectedClipIds[0] ?? null
   }
   if (state.selectedMarkerId && !next.markers.some((marker) => marker.id === state.selectedMarkerId)) {
     state.selectedMarkerId = null
@@ -207,10 +230,22 @@ export function redo() {
   emit()
 }
 
-export function selectClip(id: string | null) {
-  state.selectedClipId = id
-  if (id) state.selectedMarkerId = null
-  const clip = state.project.clips.find((item) => item.id === id)
+export function selectClip(id: string | null, additive = false) {
+  if (!id) {
+    state.selectedClipId = null
+    state.selectedClipIds = []
+  } else if (additive) {
+    const chosen = new Set(state.selectedClipIds)
+    if (chosen.has(id)) chosen.delete(id)
+    else chosen.add(id)
+    state.selectedClipIds = [...chosen]
+    state.selectedClipId = chosen.has(id) ? id : (state.selectedClipIds[0] ?? null)
+  } else {
+    state.selectedClipId = id
+    state.selectedClipIds = [id]
+  }
+  if (state.selectedClipId) state.selectedMarkerId = null
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
   state.selectedAssetId = clip?.assetId ?? state.selectedAssetId
   if (clip?.text) textTrackId = clip.trackId
   emit()
@@ -336,6 +371,255 @@ export function removeVolumeKeys(clipId: string) {
   commit((project) => clearVolumeKeys(project, clipId))
 }
 
+let clipboard: Clip[] = []
+
+function selectionIds(): string[] {
+  if (state.selectedClipIds.length) return state.selectedClipIds
+  return state.selectedClipId ? [state.selectedClipId] : []
+}
+
+export function setLane(lane: KeyLane) {
+  state.lane = lane
+  emit()
+}
+
+export function setCaptionLanguage(language: CaptionLanguage) {
+  state.captionLanguage = language
+  emit()
+}
+
+export function setStatus(status: string | null) {
+  state.status = status
+  emit()
+}
+
+export function toggleRipple(ripple: boolean) {
+  commit((project) => setRippleMode(project, ripple))
+}
+
+export function toggleTrackFlag(trackId: string, flag: 'locked' | 'muted' | 'solo' | 'hidden', value: boolean) {
+  commit((project) => setTrackFlag(project, trackId, flag, value))
+}
+
+export function setDuck(patch: Partial<Pick<Project, 'duckAmount' | 'duckAttack' | 'duckRelease'>>) {
+  live((project) => setDuckEnvelope(project, patch))
+}
+
+export function patchClip(clipId: string, patch: Partial<Clip>) {
+  live((project) => updateClip(project, clipId, patch))
+}
+
+export function copySelection() {
+  const ids = new Set(selectionIds())
+  clipboard = state.project.clips.filter((clip) => ids.has(clip.id)).map((clip) => structuredClone(clip))
+  state.status = clipboard.length ? `הועתקו ${clipboard.length} קליפים` : null
+  emit()
+}
+
+export function pasteSelection() {
+  if (!clipboard.length) return
+  const pasted = pasteClips(state.project, clipboard, playhead)
+  commit(() => pasted.project)
+  state.selectedClipIds = pasted.ids
+  state.selectedClipId = pasted.ids[0] ?? null
+  emit()
+}
+
+export function groupSelection() {
+  const ids = selectionIds()
+  commit((project) => groupClips(project, ids))
+}
+
+export function ungroupSelection() {
+  const ids = selectionIds()
+  commit((project) => ungroupClips(project, ids))
+}
+
+export function moveLaneKey(clipId: string, fromTime: number, time: number, value: number) {
+  const clip = state.project.clips.find((item) => item.id === clipId)
+  if (!clip) return
+  const lane = state.lane
+  live((project) => {
+    const current = project.clips.find((item) => item.id === clipId)
+    if (!current) return project
+    const without = {
+      ...current,
+      keys: {
+        ...current.keys,
+        [lane]: current.keys[lane].filter((key) => Math.abs(key.time - fromTime) > 0.001),
+      },
+      volumeKeys: lane === 'volume' ? current.volumeKeys.filter((key) => Math.abs(key.time - fromTime) > 0.001) : current.volumeKeys,
+    }
+    const cleared = { ...project, clips: project.clips.map((item) => (item.id === clipId ? without : item)) }
+    const ease = current.keys[lane].find((key) => Math.abs(key.time - fromTime) < 0.001)?.ease ?? 'linear'
+    return upsertLaneKey(cleared, clipId, lane, time, value, ease)
+  })
+}
+
+export function addLaneKey(clipId: string, time: number, value: number) {
+  commit((project) => upsertLaneKey(project, clipId, state.lane, time, value, 'linear'))
+}
+
+export function easeLane(ease: Ease) {
+  const id = state.selectedClipId
+  if (!id) return
+  commit((project) => setLaneEase(project, id, state.lane, ease))
+}
+
+export function applyTemplate(kind: 'lower' | 'intro' | 'outro' | 'rect' | 'ellipse' | 'star' | 'watermark') {
+  const asset = state.assets.find((item) => item.id === state.selectedAssetId && item.kind === 'image')
+    ?? state.assets.find((item) => item.kind === 'image')
+  commit((project) => {
+    if (kind === 'lower') return addLowerThird(project, playhead)
+    if (kind === 'intro') return addIntro(project)
+    if (kind === 'outro') return addOutro(project)
+    if (kind === 'watermark') {
+      if (!asset) return project
+      return addWatermark(project, asset, playhead)
+    }
+    const shape: ShapeKind = kind
+    return addSticker(project, playhead, shape)
+  })
+}
+
+export function importLutText(name: string, text: string) {
+  const lut = parseCube(text, name.replace(/\.cube$/i, ''))
+  if (!lut) {
+    state.status = 'קובץ ה-LUT לא נקרא'
+    emit()
+    return
+  }
+  const clipId = state.selectedClipId
+  commit((project) => {
+    const withLut = addLut(project, lut)
+    if (!clipId) return withLut
+    return updateClip(withLut, clipId, { lutId: lut.id })
+  })
+  state.status = `LUT ${lut.name} נוסף`
+  emit()
+}
+
+export function assignLut(lutId: string | null) {
+  const id = state.selectedClipId
+  if (!id) return
+  commit((project) => updateClip(project, id, { lutId }))
+}
+
+export function importSrtText(text: string) {
+  const cues = parseSrt(text)
+  if (!cues.length) {
+    state.status = 'קובץ ה-SRT ריק'
+    emit()
+    return
+  }
+  const trackId = textTrackId ?? state.project.tracks.find((track) => track.type === 'text')?.id ?? 't1'
+  commit((project) => {
+    let next = project
+    for (const cue of cues) {
+      const clip = makeTextClip(cue.start, trackId)
+      clip.duration = Math.max(0.2, cue.end - cue.start)
+      if (clip.text) clip.text = { ...clip.text, content: cue.text, y: 0.86, fontSize: 54 }
+      next = insertClip(next, clip)
+    }
+    return next
+  })
+  state.status = `יובאו ${cues.length} כתוביות`
+  emit()
+}
+
+export function exportSrtFile() {
+  const cues = state.project.clips
+    .filter((clip) => clip.text)
+    .sort((a, b) => a.start - b.start)
+    .map((clip) => ({ start: clip.start, end: clip.start + clip.duration, text: clip.text?.content ?? '' }))
+  const body = cuesToSrt(cues)
+  const blob = new Blob([body], { type: 'application/x-subrip' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${state.project.name || 'retzef'}.srt`
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500)
+}
+
+export async function transcribeSelected() {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
+  if (!clip?.assetId) {
+    state.status = 'בחרו קליפ עם שמע'
+    emit()
+    return
+  }
+  state.status = 'מכין שמע לתמלול…'
+  emit()
+  const buffer = await loadAudioBuffer(clip.assetId)
+  if (!buffer) {
+    state.status = 'אין שמע בקליפ'
+    emit()
+    return
+  }
+  const speed = clip.speed > 0 ? clip.speed : 1
+  const offset = Math.max(0, Math.round(clip.inPoint * buffer.sampleRate))
+  const length = Math.max(1, Math.round(clip.duration * speed * buffer.sampleRate))
+  const channel = buffer.getChannelData(0)
+  const slice = channel.slice(offset, Math.min(channel.length, offset + length))
+  state.status = 'מוריד מודל וממלל…'
+  emit()
+  try {
+    const cues = await transcribePcm(slice, buffer.sampleRate, state.captionLanguage)
+    if (!cues.length) {
+      state.status = 'לא זוהה דיבור'
+      emit()
+      return
+    }
+    const trackId = textTrackId ?? state.project.tracks.find((track) => track.type === 'text')?.id ?? 't1'
+    commit((project) => {
+      let next = project
+      for (const cue of cues) {
+        const caption = makeTextClip(clip.start + cue.start / speed, trackId)
+        caption.duration = Math.max(0.3, (cue.end - cue.start) / speed)
+        if (caption.text) caption.text = { ...caption.text, content: cue.text, y: 0.86, fontSize: 54, plate: true }
+        next = insertClip(next, caption)
+      }
+      return next
+    })
+    state.status = `נוספו ${cues.length} כתוביות`
+    emit()
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : 'התמלול נכשל'
+    emit()
+  }
+}
+
+export async function jumpCutSelected() {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
+  if (!clip?.assetId) {
+    state.status = 'בחרו קליפ עם שמע'
+    emit()
+    return
+  }
+  const buffer = await loadAudioBuffer(clip.assetId)
+  if (!buffer) {
+    state.status = 'אין שמע לזיהוי שתיקה'
+    emit()
+    return
+  }
+  const speed = clip.speed > 0 ? clip.speed : 1
+  const offset = Math.max(0, Math.round(clip.inPoint * buffer.sampleRate))
+  const length = Math.max(1, Math.round(clip.duration * speed * buffer.sampleRate))
+  const channel = buffer.getChannelData(0)
+  const slice = channel.subarray(offset, Math.min(channel.length, offset + length))
+  const gaps = silentGaps(slice, buffer.sampleRate)
+  if (!gaps.length) {
+    state.status = 'לא נמצאו שתיקות'
+    emit()
+    return
+  }
+  const ranges = gaps.map((gap) => ({ start: gap.start / speed, end: gap.end / speed }))
+  commit((project) => exciseLocalRanges(project, clip.id, ranges))
+  state.status = `הוסרו ${gaps.length} קטעי שתיקה`
+  emit()
+}
+
 export function nudgeSelectedClip(delta: number) {
   const id = state.selectedClipId
   if (!id) {
@@ -348,9 +632,9 @@ export function nudgeSelectedClip(delta: number) {
 }
 
 export function rippleSelectedClip() {
-  if (!state.selectedClipId) return
-  const id = state.selectedClipId
-  commit((project) => rippleDelete(project, id))
+  const ids = state.selectedClipIds.length ? [...state.selectedClipIds] : state.selectedClipId ? [state.selectedClipId] : []
+  if (!ids.length) return
+  commit((project) => deleteClips(project, ids, true))
 }
 
 export function placeMarker() {
@@ -365,9 +649,9 @@ export function deleteSelectedMarker() {
 }
 
 export function removeSelectedClip() {
-  if (!state.selectedClipId) return
-  const id = state.selectedClipId
-  commit((project) => deleteClip(project, id))
+  const ids = state.selectedClipIds.length ? [...state.selectedClipIds] : state.selectedClipId ? [state.selectedClipId] : []
+  if (!ids.length) return
+  commit((project) => (project.ripple ? deleteClips(project, ids, true) : deleteClips(project, ids, false)))
 }
 
 export function splitAtPlayhead() {
@@ -396,7 +680,8 @@ export function splitAtPlayhead() {
 export function nudgeClip(clipId: string, start: number, trackId: string) {
   const points = state.snap ? snapPoints(state.project, playhead, clipId) : []
   const threshold = state.snap ? 10 / state.pps : 0
-  live((base) => moveClip(base, clipId, start, trackId, points, threshold, assetMap()))
+  const companions = state.selectedClipIds.includes(clipId) ? state.selectedClipIds : []
+  live((base) => moveClip(base, clipId, start, trackId, points, threshold, assetMap(), companions))
 }
 
 export function nudgeTrim(clipId: string, edge: 'start' | 'end', time: number) {
@@ -740,7 +1025,7 @@ export function pause() {
 export function play() {
   const duration = projectDuration(state.project)
   if (duration <= 0) return
-  if (playhead >= duration - 1 / OUTPUT_FPS) playhead = 0
+  if (playhead >= duration - frameDuration()) playhead = 0
   if (playing) return
   playing = true
   emitPlaying()
@@ -753,6 +1038,10 @@ export function togglePlay() {
   else play()
 }
 
+function frameDuration(): number {
+  return 1 / presetById(state.exportPreset).fps
+}
+
 export function stepFrames(frames: number) {
-  seek(playhead + frames / OUTPUT_FPS)
+  seek(playhead + frames * frameDuration())
 }
