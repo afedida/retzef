@@ -89,7 +89,7 @@ export async function exportProject(
     frameRate: OUTPUT_FPS,
     fullCodecString: HIGH_PROFILE,
   })
-  const baseline = highProfile
+  const videoOk = highProfile
     ? true
     : await canEncodeVideo('avc', {
         width: OUTPUT_WIDTH,
@@ -97,14 +97,20 @@ export async function exportProject(
         bitrate: VIDEO_BITRATE,
         frameRate: OUTPUT_FPS,
       })
-  const audioOk = await canEncodeAudio('aac', {
+  if (!videoOk) {
+    throw new Error('הדפדפן לא תומך בקידוד H.264. ייצוא עובד ב-Chrome או ב-Edge.')
+  }
+
+  const nativeAac = await canEncodeAudio('aac', {
     numberOfChannels: 2,
     sampleRate: 48000,
     bitrate: AUDIO_BITRATE,
     fullCodecString: 'mp4a.40.2',
   })
-  if (!baseline || !audioOk) {
-    throw new Error('הדפדפן לא תומך בקידוד H.264 ו-AAC. ייצוא עובד ב-Chrome או ב-Edge.')
+  if (!nativeAac) {
+    onProgress({ ratio: 0.01, label: 'טוען מקודד AAC' })
+    const { registerAacEncoder } = await import('@mediabunny/aac-encoder')
+    registerAacEncoder()
   }
 
   onProgress({ ratio: 0.02, label: 'מכין את פס הקול' })
