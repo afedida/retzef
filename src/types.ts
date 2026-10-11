@@ -18,8 +18,10 @@ export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'darken'
 export type ShapeKind = 'rect' | 'ellipse' | 'star' | 'lower-third'
 export type KeyLane = 'volume' | 'opacity' | 'scale' | 'x' | 'y'
 export type CaptionLanguage = 'hebrew' | 'english'
+export type MaskKind = 'none' | 'ellipse' | 'vignette'
+export type CaptionStyle = 'plain' | 'karaoke' | 'pop'
 
-export type ExportPresetId = '1080p30' | '1080p60' | '720p30' | 'shorts'
+export type ExportPresetId = '1080p30' | '1080p60' | '720p30' | 'shorts' | 'square' | 'feed'
 
 export type ExportPreset = {
   id: ExportPresetId
@@ -35,6 +37,8 @@ export const EXPORT_PRESETS: ExportPreset[] = [
   { id: '1080p60', label: '1080p 60', width: 1920, height: 1080, fps: 60, videoBitrate: 12_000_000 },
   { id: '720p30', label: '720p 30', width: 1280, height: 720, fps: 30, videoBitrate: 5_000_000 },
   { id: 'shorts', label: 'Shorts 9:16', width: 1080, height: 1920, fps: 30, videoBitrate: 8_000_000 },
+  { id: 'square', label: 'ריבוע 1:1', width: 1080, height: 1080, fps: 30, videoBitrate: 8_000_000 },
+  { id: 'feed', label: 'פיד 4:5', width: 1080, height: 1350, fps: 30, videoBitrate: 8_000_000 },
 ]
 
 export function presetById(id: ExportPresetId): ExportPreset {
@@ -131,6 +135,12 @@ export type Lut = {
   data: number[]
 }
 
+export type CaptionWord = {
+  text: string
+  start: number
+  end: number
+}
+
 export type Clip = {
   id: string
   trackId: string
@@ -161,6 +171,13 @@ export type Clip = {
   preservePitch: boolean
   denoise: boolean
   normalize: boolean
+  reverse: boolean
+  mask: MaskKind
+  adjustment: boolean
+  portrait: boolean
+  captionStyle: CaptionStyle
+  words: CaptionWord[]
+  children: Clip[] | null
 }
 
 export type Track = {
@@ -193,6 +210,7 @@ export type Project = {
   duckAmount: number
   duckAttack: number
   duckRelease: number
+  beats: number[]
 }
 
 export const DEFAULT_KEN: KenBurns = {

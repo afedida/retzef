@@ -98,7 +98,7 @@ function drawShape(ctx: CanvasRenderingContext2D, clip: Clip, width: number, hei
 
 type Box = { x: number; y: number; w: number; h: number }
 
-function drawVisual(ctx: CanvasRenderingContext2D, visual: Visual, clip: Clip, local: number, dest: Box) {
+function drawVisual(ctx: CanvasRenderingContext2D, visual: Visual, clip: Clip, local: number, dest: Box, filterPrefix = '') {
   if (visual.status === 'missing') {
     ctx.fillStyle = '#3a2226'
     ctx.fillRect(dest.x, dest.y, dest.w, dest.h)
@@ -116,8 +116,7 @@ function drawVisual(ctx: CanvasRenderingContext2D, visual: Visual, clip: Clip, l
   const scale = clip.keys?.scale?.length ? sampleLane(clip.keys.scale, progress, ken.scaleStart) : lerp(ken.scaleStart, ken.scaleEnd, progress)
   const px = clip.keys?.x?.length ? sampleLane(clip.keys.x, progress, ken.xStart) : lerp(ken.xStart, ken.xEnd, progress)
   const py = clip.keys?.y?.length ? sampleLane(clip.keys.y, progress, ken.yStart) : lerp(ken.yStart, ken.yEnd, progress)
-  const color = clip.color
-  ctx.filter = `brightness(${(1 + color.brightness).toFixed(3)}) contrast(${color.contrast.toFixed(3)}) saturate(${color.saturation.toFixed(3)})`
+  ctx.filter = `${filterPrefix} ${colorFilter(clip)}`.trim()
   const rect = containRect(visual.width, visual.height, dest.w, dest.h)
   const w = rect.w * scale
   const h = rect.h * scale
@@ -187,6 +186,11 @@ export function drawText(
   ctx.direction = direction
   ctx.textAlign = text.align
   ctx.textBaseline = 'middle'
+  if ((clip.captionStyle === 'karaoke' || clip.captionStyle === 'pop') && clip.words.length) {
+    drawCaptionWords(ctx, clip, width, height, selected, local, fontPx, direction)
+    ctx.restore()
+    return
+  }
   const x = text.align === 'center' ? text.x * width : text.align === 'end' ? text.x * width : text.x * width
   const y = text.y * height
   const lineH = fontPx * 1.28
@@ -206,7 +210,7 @@ export function drawText(
     ctx.fill()
   }
   if (selected) {
-    ctx.strokeStyle = 'rgba(255, 214, 140, 0.95)'
+    ctx.strokeStyle = 'rgba(0, 120, 212, 0.95)'
     ctx.lineWidth = Math.max(2, fontPx / 18)
     roundRect(ctx, boxX, boxY, boxW, boxH, fontPx * 0.22)
     ctx.stroke()
@@ -237,6 +241,115 @@ export function drawText(
   ctx.restore()
 }
 
+function drawCaptionWords(
+  ctx: CanvasRenderingContext2D,
+  clip: Clip,
+  width: number,
+  height: number,
+  selected: boolean,
+  local: number,
+  fontPx: number,
+  direction: 'rtl' | 'ltr',
+) {
+  const text = clip.text
+  if (!text) return
+  const words = clip.words
+  const sequence = direction === 'rtl' ? [...words].reverse() : words
+  ctx.font = `700 ${fontPx}px ${FONT_STACK[text.font]}`
+  const gap = fontPx * 0.28
+  const widths = sequence.map((word) => ctx.measureText(word.text).width)
+  const total = widths.reduce((sum, item) => sum + item, 0) + gap * Math.max(0, words.length - 1)
+  const anchor = text.x * width
+  let cursor = text.align === 'center' ? anchor - total / 2 : text.align === 'end' ? anchor - total : anchor
+  if (direction === 'rtl' && text.align === 'start') cursor = anchor - total
+  const y = text.y * height
+  if (text.plate) {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.48)'
+    roundRect(ctx, cursor - fontPx * 0.35, y - fontPx * 0.75, total + fontPx * 0.7, fontPx * 1.5, fontPx * 0.2)
+    ctx.fill()
+  }
+  if (selected) {
+    ctx.strokeStyle = 'rgba(0, 120, 212, 0.95)'
+    ctx.lineWidth = Math.max(2, fontPx / 18)
+    roundRect(ctx, cursor - fontPx * 0.35, y - fontPx * 0.75, total + fontPx * 0.7, fontPx * 1.5, fontPx * 0.2)
+    ctx.stroke()
+  }
+  sequence.forEach((word, index) => {
+    const active = local >= word.start && local < word.end
+    const size = clip.captionStyle === 'pop' && active ? fontPx * 1.18 : fontPx
+    ctx.font = `700 ${size}px ${FONT_STACK[text.font]}`
+    ctx.fillStyle = active ? '#50e6ff' : text.color
+    ctx.globalAlpha = active ? 1 : 0.82
+    const wordWidth = widths[index] ?? ctx.measureText(word.text).width
+    if (text.stroke) {
+      ctx.lineWidth = Math.max(2, size / 16)
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)'
+      ctx.strokeText(word.text, cursor, y)
+    }
+    ctx.fillText(word.text, cursor, y)
+    cursor += wordWidth + gap
+  })
+  ctx.globalAlpha = 1
+}
+
+function colorFilter(clip: Clip): string {
+  const color = clip.color
+  return `brightness(${(1 + color.brightness).toFixed(3)}) contrast(${color.contrast.toFixed(3)}) saturate(${color.saturation.toFixed(3)})`
+}
+
+let plate: HTMLCanvasElement | null = null
+
+function plateContext(width: number, height: number): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null
+  if (!plate) plate = document.createElement('canvas')
+  if (plate.width !== width) plate.width = width
+  if (plate.height !== height) plate.height = height
+  const context = plate.getContext('2d')
+  context?.clearRect(0, 0, width, height)
+  return context
+}
+
+function drawPortrait(ctx: CanvasRenderingContext2D, visual: Visual, clip: Clip, local: number, width: number, height: number) {
+  const dest = { x: 0, y: 0, w: width, h: height }
+  drawVisual(ctx, visual, clip, local, dest, 'blur(18px)')
+  ctx.save()
+  ctx.beginPath()
+  ctx.ellipse(width * 0.5, height * 0.42, width * 0.22, height * 0.34, 0, 0, Math.PI * 2)
+  ctx.clip()
+  drawVisual(ctx, visual, clip, local, dest)
+  ctx.restore()
+}
+
+function applyMask(ctx: CanvasRenderingContext2D, clip: Clip, width: number, height: number) {
+  if (clip.mask === 'none') return
+  ctx.save()
+  ctx.globalCompositeOperation = 'destination-in'
+  if (clip.mask === 'ellipse') {
+    ctx.fillStyle = '#fff'
+    ctx.beginPath()
+    ctx.ellipse(width / 2, height / 2, width * 0.34, height * 0.42, 0, 0, Math.PI * 2)
+    ctx.fill()
+  } else {
+    const gradient = ctx.createRadialGradient(width / 2, height / 2, height * 0.2, width / 2, height / 2, height * 0.62)
+    gradient.addColorStop(0, 'rgba(255,255,255,1)')
+    gradient.addColorStop(1, 'rgba(255,255,255,0)')
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, width, height)
+  }
+  ctx.restore()
+}
+
+function applyAdjustment(ctx: CanvasRenderingContext2D, clip: Clip, width: number, height: number, opacity: number) {
+  const buffer = plateContext(width, height)
+  if (!buffer || !plate) return
+  buffer.drawImage(ctx.canvas, 0, 0)
+  ctx.save()
+  ctx.filter = colorFilter(clip)
+  ctx.globalAlpha = opacity
+  ctx.drawImage(plate, 0, 0)
+  ctx.restore()
+}
+
 export function paintFrame(
   ctx: CanvasRenderingContext2D,
   project: Project,
@@ -247,11 +360,15 @@ export function paintFrame(
   const width = ctx.canvas.width
   const height = ctx.canvas.height
   ctx.clearRect(0, 0, width, height)
-  ctx.fillStyle = '#050506'
+  ctx.fillStyle = '#1b1b1b'
   ctx.fillRect(0, 0, width, height)
 
   for (const layer of videoLayers(project, time)) {
     if (layer.opacity <= 0) continue
+    if (layer.clip.adjustment) {
+      applyAdjustment(ctx, layer.clip, width, height, layer.opacity)
+      continue
+    }
     ctx.save()
     ctx.globalAlpha = layer.opacity
     ctx.globalCompositeOperation = BLEND[layer.clip.blend] ?? 'source-over'
@@ -266,7 +383,17 @@ export function paintFrame(
       roundRect(ctx, boxX, boxY, boxW, boxH, frame.radius * Math.min(boxW, boxH) * 0.5)
       ctx.clip()
     }
-    if (layer.clip.shape && !layer.clip.assetId) drawShape(ctx, layer.clip, width, height)
+    const masked = layer.clip.mask !== 'none' || layer.clip.portrait
+    if (masked) {
+      const buffer = plateContext(width, height)
+      if (buffer && plate) {
+        if (layer.clip.portrait) drawPortrait(buffer, getVisual(layer.clip), layer.clip, layer.local, width, height)
+        else if (layer.clip.shape && !layer.clip.assetId) drawShape(buffer, layer.clip, width, height)
+        else drawGraded(buffer, getVisual(layer.clip), layer.clip, layer.local, width, height, project.luts, null)
+        applyMask(buffer, layer.clip, width, height)
+        ctx.drawImage(plate, 0, 0)
+      }
+    } else if (layer.clip.shape && !layer.clip.assetId) drawShape(ctx, layer.clip, width, height)
     else drawGraded(ctx, getVisual(layer.clip), layer.clip, layer.local, width, height, project.luts, boxed ? { x: boxX, y: boxY, w: boxW, h: boxH } : null)
     if (layer.clip.borderWidth > 0) {
       ctx.strokeStyle = layer.clip.borderColor || '#ffffff'

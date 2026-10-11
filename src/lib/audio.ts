@@ -7,7 +7,7 @@ import {
 } from 'mediabunny'
 import { getBlob } from '@/lib/blobs'
 import { denoisePcm } from '@/lib/denoise'
-import { audioGain, clampSpeed, trackHeard } from '@/lib/edit'
+import { audioGain, clampSpeed, flattenCompounds, trackHeard } from '@/lib/edit'
 import { applyGain, gainForTarget, integratedLufs } from '@/lib/loudness'
 import { timeStretch } from '@/lib/stretch'
 import { speechIntervals, speechLevelAt, type Span } from '@/lib/vad'
@@ -64,12 +64,29 @@ function concatBuffers(parts: WrappedAudioBuffer[]): AudioBuffer {
 }
 
 export function audibleClips(project: Project, assets: Asset[]): Clip[] {
+  const flat = flattenCompounds(project)
   const byId = new Map(assets.map((asset) => [asset.id, asset]))
-  return project.clips.filter((clip) => {
+  return flat.clips.filter((clip) => {
     if (!clip.assetId || clip.volume <= 0) return false
-    if (!trackHeard(project, clip.trackId)) return false
+    if (!trackHeard(flat, clip.trackId)) return false
     return byId.get(clip.assetId)?.hasAudio === true
   })
+}
+
+function reverseChannel(samples: Float32Array): Float32Array {
+  const out = new Float32Array(samples.length)
+  for (let index = 0; index < samples.length; index++) out[index] = samples[samples.length - 1 - index] ?? 0
+  return out
+}
+
+function resampleSpeed(samples: Float32Array, speed: number): Float32Array {
+  const length = Math.max(1, Math.round(samples.length / speed))
+  const out = new Float32Array(length)
+  for (let index = 0; index < length; index++) {
+    const source = Math.min(samples.length - 1, Math.floor(index * speed))
+    out[index] = samples[source] ?? 0
+  }
+  return out
 }
 
 let speechRegions: Span[] = []
@@ -83,11 +100,12 @@ export function getSpeechRegions(): Span[] {
 }
 
 function overlapLevel(project: Project, assets: Asset[], time: number, duckTrackId: string, attack: number, release: number): number {
+  const flat = flattenCompounds(project)
   const byId = new Map(assets.map((asset) => [asset.id, asset]))
-  const regions = project.clips
+  const regions = flat.clips
     .filter((clip) => {
       if (clip.trackId === duckTrackId || !clip.assetId || clip.volume <= 0) return false
-      if (!trackHeard(project, clip.trackId)) return false
+      if (!trackHeard(flat, clip.trackId)) return false
       return byId.get(clip.assetId)?.hasAudio === true
     })
     .map((clip) => ({ start: clip.start, end: clip.start + clip.duration }))
@@ -95,11 +113,12 @@ function overlapLevel(project: Project, assets: Asset[], time: number, duckTrack
 }
 
 export async function analyzeSpeech(project: Project, assets: Asset[]): Promise<Span[]> {
+  const flat = flattenCompounds(project)
   const byId = new Map(assets.map((asset) => [asset.id, asset]))
   const regions: Span[] = []
-  for (const clip of project.clips) {
+  for (const clip of flat.clips) {
     const track = project.tracks.find((item) => item.id === clip.trackId)
-    if (!clip.assetId || track?.duck || !trackHeard(project, clip.trackId)) continue
+    if (!clip.assetId || track?.duck || !trackHeard(flat, clip.trackId)) continue
     if (byId.get(clip.assetId)?.hasAudio !== true) continue
     const buffer = await loadAudioBuffer(clip.assetId)
     if (!buffer) continue
@@ -110,10 +129,17 @@ export async function analyzeSpeech(project: Project, assets: Asset[]): Promise<
     const slice = channel.subarray(offset, Math.min(channel.length, offset + length))
     if (slice.length < 32) continue
     for (const span of speechIntervals(slice, buffer.sampleRate)) {
-      regions.push({
-        start: clip.start + span.start / speed,
-        end: clip.start + span.end / speed,
-      })
+      if (clip.reverse) {
+        regions.push({
+          start: clip.start + clip.duration - span.end / speed,
+          end: clip.start + clip.duration - span.start / speed,
+        })
+      } else {
+        regions.push({
+          start: clip.start + span.start / speed,
+          end: clip.start + span.end / speed,
+        })
+      }
     }
   }
   speechRegions = regions
@@ -154,7 +180,9 @@ async function processSlice(clip: Clip, buffer: AudioBuffer, offsetSec: number, 
   for (let channel = 0; channel < channels; channel++) {
     let samples = sliceChannel(buffer, channel, offset, length)
     if (preserve) samples = timeStretch(samples, rate, speed)
+    else if (clip.reverse && Math.abs(speed - 1) > 0.001) samples = resampleSpeed(samples, speed)
     if (clip.denoise) samples = await denoisePcm(samples, rate)
+    if (clip.reverse) samples = reverseChannel(samples)
     processed.push(samples)
   }
   let gain = 1
@@ -176,9 +204,9 @@ export async function clipPlaybackBuffer(clip: Clip, buffer: AudioBuffer, offset
   span: number
 }> {
   const speed = clampSpeed(clip.speed)
-  const needs = clip.denoise || clip.normalize || (clip.preservePitch !== false && Math.abs(speed - 1) > 0.001)
+  const needs = clip.reverse || clip.denoise || clip.normalize || (clip.preservePitch !== false && Math.abs(speed - 1) > 0.001)
   if (!needs) return { buffer, offset: offsetSec, rate: speed, span: spanSec }
-  const key = `${clip.assetId}:${offsetSec.toFixed(3)}:${spanSec.toFixed(3)}:${speed}:${clip.preservePitch}:${clip.denoise}:${clip.normalize}`
+  const key = `${clip.assetId}:${offsetSec.toFixed(3)}:${spanSec.toFixed(3)}:${speed}:${clip.preservePitch}:${clip.denoise}:${clip.normalize}:${clip.reverse}`
   let pending = playbackCache.get(key)
   if (!pending) {
     pending = processSlice(clip, buffer, offsetSec, spanSec)

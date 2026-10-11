@@ -1,7 +1,9 @@
 import { loadAudioBuffer, peakEnvelope, forgetAudio } from '@/lib/audio'
+import { detectBeats } from '@/lib/beats'
 import { transcribePcm } from '@/lib/captions'
+import { youtubeChapters } from '@/lib/chapters'
 import { dropBlob, getBlob, getUrl, putBlob } from '@/lib/blobs'
-import { deleteStoredAsset, loadStoredAssets, loadStoredProject, saveAsset, saveProject } from '@/lib/db'
+import { deleteStoredAsset, loadStoredAssets, loadStoredProject, loadVersions, saveAsset, saveProject, saveVersions, type ProjectVersion } from '@/lib/db'
 import {
   addMarker,
   addTextTrack,
@@ -12,9 +14,12 @@ import {
   addLut,
   deleteClips,
   deleteClipsForAsset,
+  deleteWord,
   exciseLocalRanges,
   groupClips,
   insertClip,
+  makeAdjustmentClip,
+  nestClips,
   makeMediaClip,
   makeTextClip,
   moveClip,
@@ -37,12 +42,17 @@ import {
   snapPoints,
   splitClip,
   trimClip,
+  removeFillers,
+  setMotionKeys,
   ungroupClips,
+  unnestClip,
   updateClip,
   updateText,
   upsertLaneKey,
   upsertVolumeKey,
 } from '@/lib/edit'
+import { evenWords } from '@/lib/fillers'
+import { LOOKS } from '@/lib/looks'
 import { parseCube } from '@/lib/lut'
 import { cuesToSrt, parseSrt } from '@/lib/srt'
 import { addIntro, addLowerThird, addOutro, addSticker, addWatermark } from '@/lib/templates'
@@ -69,6 +79,8 @@ export type EditorState = {
   selectedMarkerId: string | null
   canUndo: boolean
   canRedo: boolean
+  trackArmed: boolean
+  versions: ProjectVersion[]
 }
 
 const history = {
@@ -100,6 +112,8 @@ const state: EditorState = {
   selectedMarkerId: null,
   canUndo: false,
   canRedo: false,
+  trackArmed: false,
+  versions: [],
 }
 
 const listeners = new Set<() => void>()
@@ -519,6 +533,7 @@ export function importSrtText(text: string) {
       const clip = makeTextClip(cue.start, trackId)
       clip.duration = Math.max(0.2, cue.end - cue.start)
       if (clip.text) clip.text = { ...clip.text, content: cue.text, y: 0.86, fontSize: 54 }
+      clip.words = evenWords(cue.text, clip.duration)
       next = insertClip(next, clip)
     }
     return next
@@ -578,6 +593,7 @@ export async function transcribeSelected() {
         const caption = makeTextClip(clip.start + cue.start / speed, trackId)
         caption.duration = Math.max(0.3, (cue.end - cue.start) / speed)
         if (caption.text) caption.text = { ...caption.text, content: cue.text, y: 0.86, fontSize: 54, plate: true }
+        caption.words = evenWords(cue.text, caption.duration)
         next = insertClip(next, caption)
       }
       return next
@@ -617,6 +633,234 @@ export async function jumpCutSelected() {
   const ranges = gaps.map((gap) => ({ start: gap.start / speed, end: gap.end / speed }))
   commit((project) => exciseLocalRanges(project, clip.id, ranges))
   state.status = `הוסרו ${gaps.length} קטעי שתיקה`
+  emit()
+}
+
+function selectedIds(): string[] {
+  return state.selectedClipIds.length ? [...state.selectedClipIds] : state.selectedClipId ? [state.selectedClipId] : []
+}
+
+function projectSignature(project: Project): string {
+  return `${project.name}|${project.clips.map((clip) => `${clip.id}:${clip.start.toFixed(2)}:${clip.duration.toFixed(2)}`).join(',')}`
+}
+
+export async function refreshVersions() {
+  state.versions = await loadVersions()
+  emit()
+}
+
+export async function rememberVersion(manual = false) {
+  const versions = state.versions.length ? state.versions : await loadVersions()
+  const signature = projectSignature(state.project)
+  if (!manual && versions[0] && projectSignature(versions[0].project) === signature) {
+    state.versions = versions
+    return
+  }
+  const next: ProjectVersion = {
+    id: crypto.randomUUID(),
+    savedAt: Date.now(),
+    name: state.project.name,
+    project: structuredClone(state.project),
+  }
+  state.versions = [next, ...versions].slice(0, 12)
+  await saveVersions(state.versions)
+  if (manual) state.status = 'גרסה נשמרה'
+  emit()
+}
+
+export function restoreVersion(id: string) {
+  const version = state.versions.find((item) => item.id === id)
+  if (!version) return
+  const project = coerceProject(structuredClone(version.project))
+  if (!project) return
+  commit(() => project)
+  state.status = 'שוחזרה גרסה'
+  emit()
+}
+
+export function setTrackArmed(armed: boolean) {
+  state.trackArmed = armed
+  state.status = armed ? 'לחצו על התצוגה כדי לעקוב אחרי נקודה' : null
+  emit()
+}
+
+export function applyLook(id: string) {
+  const look = LOOKS.find((item) => item.id === id)
+  const ids = selectedIds()
+  if (!look || !ids.length) {
+    state.status = 'בחרו קליפ למראה'
+    emit()
+    return
+  }
+  commit((project) => ids.reduce((next, clipId) => updateClip(next, clipId, { color: { ...look.color } }), project))
+}
+
+export function reframeShorts() {
+  setExportPreset('shorts')
+  const picked = selectedIds().filter((id) => state.project.clips.some((clip) => clip.id === id && !clip.text))
+  const targets = picked.length ? picked : state.project.clips.filter((clip) => !clip.text && (clip.assetId || clip.children?.length)).map((clip) => clip.id)
+  commit((project) =>
+    targets.reduce(
+      (next, id) =>
+        updateClip(next, id, {
+          kenBurns: { scaleStart: 3.16, scaleEnd: 3.16, xStart: 0.5, yStart: 0.5, xEnd: 0.5, yEnd: 0.5 },
+        }),
+      project,
+    ),
+  )
+  state.status = 'הקנבס עבר ל־9:16 והפריים הוגדל'
+  emit()
+}
+
+export function toggleReverse() {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
+  if (!clip?.assetId) {
+    state.status = 'בחרו קליפ מדיה להיפוך'
+    emit()
+    return
+  }
+  commit((project) => updateClip(project, clip.id, { reverse: !clip.reverse }))
+}
+
+export function setMask(mask: 'none' | 'ellipse' | 'vignette') {
+  const id = state.selectedClipId
+  if (!id) return
+  commit((project) => updateClip(project, id, { mask }))
+}
+
+export function togglePortrait() {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
+  if (!clip?.assetId) return
+  commit((project) => updateClip(project, clip.id, { portrait: !clip.portrait }))
+}
+
+export function addAdjustment() {
+  const track = state.project.tracks.find((item) => item.type === 'video' && item.id === 'v2') ?? state.project.tracks.find((item) => item.type === 'video')
+  if (!track) return
+  const clip = makeAdjustmentClip(track.id, playhead)
+  commit((project) => insertClip(project, clip))
+  state.selectedClipId = clip.id
+  state.selectedClipIds = [clip.id]
+  emit()
+}
+
+export function setCaptionStyle(style: 'plain' | 'karaoke' | 'pop') {
+  const ids = selectedIds()
+  commit((project) =>
+    ids.reduce((next, id) => {
+      const clip = next.clips.find((item) => item.id === id)
+      if (!clip?.text) return next
+      return updateClip(next, id, {
+        captionStyle: style,
+        words: clip.words.length ? clip.words : evenWords(clip.text.content, clip.duration),
+      })
+    }, project),
+  )
+}
+
+export function nestSelection() {
+  const ids = selectedIds()
+  const before = state.project.clips.length
+  commit((project) => nestClips(project, ids))
+  if (state.project.clips.length === before) state.status = 'בחרו שני קליפים באותו מסלול'
+  emit()
+}
+
+export function unnestSelection() {
+  const id = state.selectedClipId
+  if (!id) return
+  commit((project) => unnestClip(project, id))
+}
+
+export function downloadChapters() {
+  const body = youtubeChapters(state.project.markers)
+  const blob = new Blob([body], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${state.project.name || 'retzef'}-chapters.txt`
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500)
+}
+
+export async function markBeats() {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId && item.assetId)
+  if (!clip?.assetId) {
+    state.status = 'בחרו קליפ עם שמע'
+    emit()
+    return
+  }
+  const buffer = await loadAudioBuffer(clip.assetId)
+  if (!buffer) {
+    state.status = 'אין שמע לזיהוי פעימות'
+    emit()
+    return
+  }
+  const speed = clip.speed > 0 ? clip.speed : 1
+  const offset = Math.max(0, Math.round(clip.inPoint * buffer.sampleRate))
+  const length = Math.max(1, Math.round(clip.duration * speed * buffer.sampleRate))
+  const channel = buffer.getChannelData(0).slice(offset, Math.min(buffer.length, offset + length))
+  const beats = detectBeats(channel, buffer.sampleRate).map((time) => clip.start + time / speed)
+  commit((project) => ({ ...project, beats }))
+  state.status = beats.length ? `סומנו ${beats.length} פעימות` : 'לא נמצאו פעימות'
+  emit()
+}
+
+export function clearBeats() {
+  commit((project) => ({ ...project, beats: [] }))
+}
+
+export function cutWord(clipId: string, index: number) {
+  commit((project) => deleteWord(project, clipId, index))
+}
+
+export function cutFillers() {
+  const before = projectSignature(state.project)
+  commit((project) => removeFillers(project))
+  state.status = projectSignature(state.project) === before ? 'לא נמצאו מילות מילוי' : 'מילות המילוי הוסרו'
+  emit()
+}
+
+let grabPng: (() => Promise<Blob | null>) | null = null
+
+export function registerPreviewGrab(grab: () => Promise<Blob | null>): () => void {
+  grabPng = grab
+  return () => {
+    if (grabPng === grab) grabPng = null
+  }
+}
+
+export async function freezeFrame() {
+  const blob = await grabPng?.()
+  if (!blob) {
+    state.status = 'אין פריים לתפיסה'
+    emit()
+    return
+  }
+  const file = new File([blob], 'פריים.png', { type: 'image/png' })
+  const created = await importFiles([file])
+  const asset = created[0]
+  if (!asset) return
+  const trackId = preferredTrack(state.project, 'image', playhead, 2)
+  let placed: string | null = null
+  commit((project) => {
+    const clip = makeMediaClip(asset, trackId, playhead)
+    clip.duration = 2
+    placed = clip.id
+    return insertClip(project, clip)
+  })
+  if (placed) {
+    state.selectedClipId = placed
+    state.selectedClipIds = [placed]
+  }
+  state.status = 'פריים קפוא נוסף לציר'
+  emit()
+}
+
+export function applyMotion(clipId: string, points: { time: number; x: number; y: number }[]) {
+  commit((project) => setMotionKeys(project, clipId, points))
+  state.trackArmed = false
+  state.status = 'מסלול הטקסט נשמר'
   emit()
 }
 
@@ -932,6 +1176,15 @@ async function boot() {
   state.ready = true
   touchHistory()
   emit()
+  void loadVersions()
+    .then((versions) => {
+      state.versions = versions
+      emit()
+    })
+    .catch(() => undefined)
+  window.setInterval(() => {
+    if (state.ready) void rememberVersion(false)
+  }, 120_000)
 }
 
 let playhead = 0

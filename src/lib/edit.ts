@@ -1,3 +1,4 @@
+import { fillerRanges } from '@/lib/fillers'
 import { sampleLane } from '@/lib/keyframes'
 import {
   DEFAULT_CHROMA,
@@ -11,6 +12,7 @@ import {
   emptyKeys,
   type Asset,
   type BlendMode,
+  type CaptionWord,
   type Clip,
   type ClipKeys,
   type ColorGrade,
@@ -57,6 +59,7 @@ export function blankProject(): Project {
     duckAmount: 0.72,
     duckAttack: 0.08,
     duckRelease: 0.28,
+    beats: [],
   }
 }
 
@@ -116,6 +119,13 @@ function mediaDefaults(): Pick<
   | 'preservePitch'
   | 'denoise'
   | 'normalize'
+  | 'reverse'
+  | 'mask'
+  | 'adjustment'
+  | 'portrait'
+  | 'captionStyle'
+  | 'words'
+  | 'children'
 > {
   return {
     speed: 1,
@@ -137,6 +147,13 @@ function mediaDefaults(): Pick<
     preservePitch: true,
     denoise: false,
     normalize: false,
+    reverse: false,
+    mask: 'none',
+    adjustment: false,
+    portrait: false,
+    captionStyle: 'plain',
+    words: [],
+    children: null,
   }
 }
 
@@ -163,7 +180,7 @@ export function freshClip(partial: Partial<Clip> & Pick<Clip, 'id'>): Clip {
 
 export function clipTrackType(clip: Clip, assets: Map<string, Asset>): TrackType | null {
   if (clip.text) return 'text'
-  if (clip.shape) return 'video'
+  if (clip.shape || clip.adjustment || (clip.children?.length ?? 0) > 0) return 'video'
   if (!clip.assetId) return null
   const asset = assets.get(clip.assetId)
   if (!asset) return null
@@ -223,7 +240,7 @@ export function snapMove(start: number, duration: number, points: number[], thre
 }
 
 export function snapPoints(project: Project, playhead: number, excludeId?: string): number[] {
-  const points = [0, playhead, ...project.markers.map((marker) => marker.time)]
+  const points = [0, playhead, ...project.markers.map((marker) => marker.time), ...(project.beats ?? [])]
   for (const clip of project.clips) {
     if (clip.id === excludeId) continue
     points.push(clip.start, clipEnd(clip))
@@ -510,6 +527,7 @@ function splitKen(ken: KenBurns, leftRatio: number): { left: KenBurns; right: Ke
 export function splitClip(project: Project, clipId: string, time: number): { project: Project; newId: string } | null {
   const clip = project.clips.find((item) => item.id === clipId)
   if (!clip) return null
+  if (clip.children?.length) return null
   if (time <= clip.start + MIN_CLIP / 2 || time >= clipEnd(clip) - MIN_CLIP / 2) return null
   const leftDuration = time - clip.start
   const rightDuration = clip.duration - leftDuration
@@ -536,6 +554,8 @@ export function splitClip(project: Project, clipId: string, time: number): { pro
       x: lanes.x.left,
       y: lanes.y.left,
     },
+    words: sliceWords(clip.words, 0, leftDuration),
+    children: null,
   })
   const right = withFades({
     ...clip,
@@ -557,6 +577,8 @@ export function splitClip(project: Project, clipId: string, time: number): { pro
       x: lanes.x.right,
       y: lanes.y.right,
     },
+    words: sliceWords(clip.words, leftDuration, clip.duration),
+    children: null,
   })
   return {
     newId: rightId,
@@ -857,14 +879,19 @@ function coerceClip(value: unknown, tracks: Track[]): Clip | null {
   const text = track.type === 'text' ? coerceText(raw.text) : null
   if (track.type === 'text' && !text) return null
   const shape = SHAPES.includes(raw.shape as ShapeKind) ? (raw.shape as ShapeKind) : null
-  if (track.type !== 'text' && typeof raw.assetId !== 'string' && !shape) return null
+  const adjustment = raw.adjustment === true
+  const children = track.type === 'video' ? coerceChildren(raw.children, raw.trackId, tracks) : null
+  if (track.type !== 'text' && typeof raw.assetId !== 'string' && !shape && !adjustment && !children) return null
   const duration = Math.max(MIN_CLIP, finite(raw.duration, 1))
   const fades = clampFades(duration, finite(raw.fadeIn, 0), finite(raw.fadeOut, 0))
   const chromaRaw = (raw.chroma && typeof raw.chroma === 'object' ? raw.chroma : {}) as Partial<Clip['chroma']>
   return {
     id: raw.id,
     trackId: raw.trackId,
-    assetId: track.type === 'text' || (shape && typeof raw.assetId !== 'string') ? null : (raw.assetId ?? null),
+    assetId:
+      track.type === 'text' || adjustment || children || (shape && typeof raw.assetId !== 'string')
+        ? null
+        : (raw.assetId ?? null),
     start: Math.max(0, finite(raw.start, 0)),
     duration,
     inPoint: Math.max(0, finite(raw.inPoint, 0)),
@@ -896,7 +923,46 @@ function coerceClip(value: unknown, tracks: Track[]): Clip | null {
     preservePitch: raw.preservePitch !== false,
     denoise: raw.denoise === true,
     normalize: raw.normalize === true,
+    reverse: raw.reverse === true,
+    mask: raw.mask === 'ellipse' || raw.mask === 'vignette' ? raw.mask : 'none',
+    adjustment: track.type === 'video' && adjustment,
+    portrait: raw.portrait === true,
+    captionStyle: raw.captionStyle === 'karaoke' || raw.captionStyle === 'pop' ? raw.captionStyle : 'plain',
+    words: coerceWords(raw.words),
+    children,
   }
+}
+
+function coerceWords(value: unknown): CaptionWord[] {
+  if (!Array.isArray(value)) return []
+  const words: CaptionWord[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const raw = item as Partial<CaptionWord>
+    if (typeof raw.text !== 'string' || !raw.text.trim()) continue
+    const start = finite(raw.start, 0)
+    const end = finite(raw.end, start)
+    if (end <= start) continue
+    words.push({ text: raw.text.trim(), start: Math.max(0, start), end })
+  }
+  return words
+}
+
+function coerceChildren(value: unknown, trackId: string, tracks: Track[]): Clip[] | null {
+  if (!Array.isArray(value) || !value.length) return null
+  const host = tracks.some((track) => track.id === trackId)
+    ? tracks
+    : [
+        ...tracks,
+        { id: trackId, type: 'video' as const, name: trackId, duck: false, locked: false, muted: false, solo: false, hidden: false },
+      ]
+  const children: Clip[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const clip = coerceClip({ ...(item as Clip), trackId, children: null }, host)
+    if (clip) children.push({ ...clip, children: null })
+  }
+  return children.length ? children : null
 }
 
 function coerceMarkers(value: unknown): Marker[] {
@@ -935,7 +1001,13 @@ export function coerceProject(value: unknown): Project | null {
     duckAmount: Math.min(1, Math.max(0, finite(raw.duckAmount, 0.72))),
     duckAttack: Math.min(2, Math.max(0, finite(raw.duckAttack, 0.08))),
     duckRelease: Math.min(2, Math.max(0, finite(raw.duckRelease, 0.28))),
+    beats: coerceBeats(raw.beats),
   }
+}
+
+function coerceBeats(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is number => typeof item === 'number' && Number.isFinite(item) && item >= 0).slice(0, 400)
 }
 
 function coerceLuts(value: unknown): Lut[] {
@@ -999,12 +1071,13 @@ export function adjacentTransition(previous: Clip | null, next: Clip): number {
 }
 
 export function videoLayers(project: Project, time: number): DrawLayer[] {
+  const flat = flattenCompounds(project)
   const layers: DrawLayer[] = []
-  const videoTracks = project.tracks.filter((track) => track.type === 'video' && trackShown(project, track.id))
+  const videoTracks = flat.tracks.filter((track) => track.type === 'video' && trackShown(flat, track.id))
   for (let index = videoTracks.length - 1; index >= 0; index--) {
     const track = videoTracks[index]
     if (!track) continue
-    const clips = project.clips.filter((clip) => clip.trackId === track.id).sort((a, b) => a.start - b.start)
+    const clips = flat.clips.filter((clip) => clip.trackId === track.id).sort((a, b) => a.start - b.start)
     const covered = new Set<string>()
     for (let clipIndex = 0; clipIndex < clips.length; clipIndex++) {
       const incoming = clips[clipIndex]
@@ -1059,7 +1132,9 @@ export function videoLayers(project: Project, time: number): DrawLayer[] {
 }
 
 export function sourceTimeAt(clip: Clip, local: number): number {
-  return Math.max(0, clip.inPoint + local * clampSpeed(clip.speed))
+  const speed = clampSpeed(clip.speed)
+  if (clip.reverse) return Math.max(0, clip.inPoint + clip.duration * speed - local * speed)
+  return Math.max(0, clip.inPoint + local * speed)
 }
 
 export function makeShapeClip(shape: ShapeKind, trackId: string, start: number, duration = 3): Clip {
@@ -1085,7 +1160,7 @@ export function makeShapeClip(shape: ShapeKind, trackId: string, start: number, 
 
 export function exciseLocalRanges(project: Project, clipId: string, ranges: { start: number; end: number }[]): Project {
   const clip = project.clips.find((item) => item.id === clipId)
-  if (!clip || !ranges.length) return project
+  if (!clip || clip.children?.length || !ranges.length) return project
   const merged: { start: number; end: number }[] = []
   for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
     const start = Math.max(0, Math.min(clip.duration, range.start))
@@ -1115,7 +1190,9 @@ export function exciseLocalRanges(project: Project, clipId: string, ranges: { st
       duration,
       inPoint: clip.inPoint + part.start * speed,
       transition: index === 0 ? clip.transition : null,
-      text: clip.text ? { ...clip.text } : null,
+      text: textForSlice(clip, part.start, part.end),
+      words: sliceWords(clip.words, part.start, part.end),
+      children: null,
     })
   })
   let placed = clip.start
@@ -1261,4 +1338,161 @@ export function clearLane(project: Project, clipId: string, lane: KeyLane): Proj
   const keys = { ...(clip.keys ?? emptyKeys()), [lane]: [] }
   if (lane === 'volume') return updateClip(project, clipId, { keys, volumeKeys: [] })
   return updateClip(project, clipId, { keys })
+}
+
+function textForSlice(clip: Clip, start: number, end: number): Clip['text'] {
+  if (!clip.text) return null
+  const words = sliceWords(clip.words, start, end)
+  if (!clip.words.length) return { ...clip.text }
+  return { ...clip.text, content: words.map((word) => word.text).join(' ') || clip.text.content }
+}
+
+function sliceWords(words: CaptionWord[] | undefined, start: number, end: number): CaptionWord[] {
+  if (!words?.length) return []
+  const sliced: CaptionWord[] = []
+  for (const word of words) {
+    const from = Math.max(word.start, start)
+    const to = Math.min(word.end, end)
+    if (to - from < 0.02) continue
+    sliced.push({ text: word.text, start: from - start, end: to - start })
+  }
+  return sliced
+}
+
+export function flattenCompounds(project: Project): Project {
+  if (!project.clips.some((clip) => clip.children?.length)) return project
+  const clips: Clip[] = []
+  for (const clip of project.clips) {
+    if (!clip.children?.length) {
+      clips.push(clip)
+      continue
+    }
+    for (const child of clip.children) {
+      clips.push({
+        ...child,
+        start: clip.start + Math.max(0, child.start),
+        trackId: clip.trackId,
+        children: null,
+      })
+    }
+  }
+  return { ...project, clips }
+}
+
+export function nestClips(project: Project, ids: string[]): Project {
+  const chosen = project.clips.filter((clip) => ids.includes(clip.id))
+  if (chosen.length < 2) return project
+  if (chosen.some((clip) => clip.children?.length)) return project
+  const trackId = chosen[0]!.trackId
+  if (chosen.some((clip) => clip.trackId !== trackId)) return project
+  const start = Math.min(...chosen.map((clip) => clip.start))
+  const end = Math.max(...chosen.map((clip) => clipEnd(clip)))
+  const parent = freshClip({
+    id: crypto.randomUUID(),
+    trackId,
+    assetId: null,
+    start,
+    duration: Math.max(MIN_CLIP, end - start),
+    inPoint: 0,
+    volume: 0,
+    text: null,
+    children: chosen
+      .map((clip) => ({ ...clip, start: clip.start - start, children: null }))
+      .sort((a, b) => a.start - b.start),
+  })
+  const drop = new Set(ids)
+  return { ...project, clips: [...project.clips.filter((clip) => !drop.has(clip.id)), parent] }
+}
+
+export function unnestClip(project: Project, id: string): Project {
+  const clip = project.clips.find((item) => item.id === id)
+  if (!clip?.children?.length) return project
+  const pieces = clip.children.map((child) => ({
+    ...child,
+    id: crypto.randomUUID(),
+    trackId: clip.trackId,
+    start: clip.start + child.start,
+    children: null,
+  }))
+  return { ...project, clips: project.clips.flatMap((item) => (item.id === id ? pieces : [item])) }
+}
+
+export function deleteWord(project: Project, captionId: string, index: number): Project {
+  const caption = project.clips.find((clip) => clip.id === captionId)
+  const word = caption?.words[index]
+  if (!caption || !word) return project
+  const absStart = caption.start + word.start
+  const absEnd = caption.start + word.end
+  const videos = project.clips.filter((clip) => {
+    const track = project.tracks.find((item) => item.id === clip.trackId)
+    if (!track || track.type !== 'video' || !clip.assetId || clip.children?.length) return false
+    return clip.start < absEnd - 0.01 && clipEnd(clip) > absStart + 0.01
+  })
+  let next = exciseLocalRanges(project, captionId, [{ start: Math.max(0, word.start - 0.02), end: word.end + 0.02 }])
+  for (const video of videos) {
+    next = exciseLocalRanges(next, video.id, [
+      { start: Math.max(0, absStart - video.start), end: Math.min(video.duration, absEnd - video.start) },
+    ])
+  }
+  return next
+}
+
+export function removeFillers(project: Project): Project {
+  const cuts = new Map<string, { start: number; end: number }[]>()
+  const push = (id: string, ranges: { start: number; end: number }[]) => {
+    const list = cuts.get(id) ?? []
+    list.push(...ranges)
+    cuts.set(id, list)
+  }
+  for (const clip of project.clips) {
+    const ranges = fillerRanges(clip.words ?? [], 0.04)
+    if (!ranges.length) continue
+    push(clip.id, ranges)
+    for (const range of ranges) {
+      const absStart = clip.start + range.start
+      const absEnd = clip.start + range.end
+      for (const video of project.clips) {
+        const track = project.tracks.find((item) => item.id === video.trackId)
+        if (!track || track.type !== 'video' || !video.assetId || video.children?.length) continue
+        if (video.start >= absEnd || clipEnd(video) <= absStart) continue
+        push(video.id, [
+          {
+            start: Math.max(0, absStart - video.start),
+            end: Math.min(video.duration, absEnd - video.start),
+          },
+        ])
+      }
+    }
+  }
+  let next = project
+  for (const [id, ranges] of cuts) next = exciseLocalRanges(next, id, ranges)
+  return next
+}
+
+export function makeAdjustmentClip(trackId: string, start: number, duration = 3): Clip {
+  return freshClip({
+    id: crypto.randomUUID(),
+    trackId,
+    assetId: null,
+    start: Math.max(0, start),
+    duration,
+    inPoint: 0,
+    volume: 0,
+    text: null,
+    adjustment: true,
+    color: { brightness: 0.04, contrast: 1.08, saturation: 1.05 },
+  })
+}
+
+export function setMotionKeys(project: Project, clipId: string, points: { time: number; x: number; y: number }[]): Project {
+  const clip = project.clips.find((item) => item.id === clipId)
+  if (!clip || !points.length || clip.duration <= 0) return project
+  const keys = clip.keys ?? emptyKeys()
+  const lane = (axis: 'x' | 'y') =>
+    points.map((point) => ({
+      time: Math.min(1, Math.max(0, (point.time - clip.start) / clip.duration)),
+      value: Math.min(1, Math.max(0, point[axis])),
+      ease: 'linear' as const,
+    }))
+  return updateClip(project, clipId, { keys: { ...keys, x: lane('x'), y: lane('y') } })
 }

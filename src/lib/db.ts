@@ -60,3 +60,38 @@ export async function loadStoredProject(): Promise<Project | null> {
   db.close()
   return coerceProject(value)
 }
+
+export type ProjectVersion = {
+  id: string
+  savedAt: number
+  name: string
+  project: Project
+}
+
+export async function loadVersions(): Promise<ProjectVersion[]> {
+  const db = await openDb()
+  const value = await requestToPromise(db.transaction('kv', 'readonly').objectStore('kv').get('versions'))
+  db.close()
+  if (!Array.isArray(value)) return []
+  return value
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null
+      const raw = item as Partial<ProjectVersion>
+      const project = coerceProject(raw.project)
+      if (!project || typeof raw.id !== 'string') return null
+      return {
+        id: raw.id,
+        savedAt: typeof raw.savedAt === 'number' ? raw.savedAt : 0,
+        name: typeof raw.name === 'string' ? raw.name : project.name,
+        project,
+      }
+    })
+    .filter((item): item is ProjectVersion => item !== null)
+    .slice(0, 12)
+}
+
+export async function saveVersions(versions: ProjectVersion[]): Promise<void> {
+  const db = await openDb()
+  await requestToPromise(db.transaction('kv', 'readwrite').objectStore('kv').put(versions.slice(0, 12), 'versions'))
+  db.close()
+}

@@ -1,18 +1,42 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { Captions, Clapperboard, Film, History, Mic, SlidersHorizontal } from 'lucide-react'
 import { ExportDialog } from '@/components/ExportDialog'
 import { Inspector } from '@/components/Inspector'
 import { MediaBin } from '@/components/MediaBin'
 import { Preview } from '@/components/Preview'
+import { HistoryPanel, LibraryPanel, RecordPanel, TranscriptPanel } from '@/components/StudioPanels'
 import { Timeline } from '@/components/Timeline'
 import { TopBar } from '@/components/TopBar'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { cn } from '@/lib/utils'
 import { presetById } from '@/types'
 import { copySelection, deleteSelectedMarker, downloadProjectFile, getState, groupSelection, importFiles, nudgeSelectedClip, pasteSelection, placeMarker, redo, removeSelectedClip, rippleSelectedClip, seek, setPps, splitAtPlayhead, togglePlay, undo, ungroupSelection } from '@/state/editor'
 import { useEditor } from '@/state/hooks'
 
+type PanelId = 'media' | 'inspect' | 'library' | 'transcript' | 'record' | 'history'
+
+const PANELS: { id: PanelId; label: string; icon: typeof Film }[] = [
+  { id: 'media', label: 'מדיה', icon: Film },
+  { id: 'inspect', label: 'מאפיינים', icon: SlidersHorizontal },
+  { id: 'library', label: 'כלים', icon: Clapperboard },
+  { id: 'transcript', label: 'תמלול', icon: Captions },
+  { id: 'record', label: 'הקלטה', icon: Mic },
+  { id: 'history', label: 'גרסאות', icon: History },
+]
+
+function SidePanel({ panel }: { panel: PanelId }) {
+  if (panel === 'inspect') return <Inspector className="min-h-0 flex-1 border-0" />
+  if (panel === 'library') return <LibraryPanel />
+  if (panel === 'transcript') return <TranscriptPanel />
+  if (panel === 'record') return <RecordPanel />
+  if (panel === 'history') return <HistoryPanel />
+  return <MediaBin className="min-h-0 flex-1 border-0" />
+}
+
 export function Editor() {
   const ready = useEditor((state) => state.ready)
   const pps = useEditor((state) => state.pps)
+  const [panel, setPanel] = useState<PanelId>('media')
 
   useEffect(() => {
     const onDragOver = (event: DragEvent) => {
@@ -108,24 +132,49 @@ export function Editor() {
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <TopBar />
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)_300px]">
-        <MediaBin className="hidden lg:flex" />
-        <div className="flex min-h-0 min-w-0 flex-col">
+      <div className="flex min-h-0 flex-1">
+        <nav aria-label="לוחות" className="flex w-12 shrink-0 flex-col items-center gap-1 border-e bg-[#1e1e1e] py-2">
+          {PANELS.map((item) => {
+            const Icon = item.icon
+            const active = panel === item.id
+            return (
+              <button
+                key={item.id}
+                type="button"
+                aria-label={item.label}
+                aria-pressed={active}
+                title={item.label}
+                className={cn(
+                  'grid size-8 place-items-center rounded-md text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring',
+                  active && 'bg-[#094771] text-white',
+                )}
+                onClick={() => setPanel(item.id)}
+              >
+                <Icon className="size-4" />
+              </button>
+            )
+          })}
+        </nav>
+        <div className="hidden w-80 shrink-0 border-e lg:flex">
+          <SidePanel panel={panel} />
+        </div>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <Preview />
-          <Tabs defaultValue="media" className="max-h-56 shrink-0 border-t lg:hidden">
-            <TabsList className="mx-2 mt-2">
-              <TabsTrigger value="media">מדיה</TabsTrigger>
-              <TabsTrigger value="inspector">מאפיינים</TabsTrigger>
+          <Tabs value={panel} onValueChange={(value) => setPanel(value as PanelId)} className="max-h-64 shrink-0 border-t lg:hidden">
+            <TabsList className="mx-2 mt-2 w-auto overflow-x-auto">
+              {PANELS.map((item) => (
+                <TabsTrigger key={item.id} value={item.id}>
+                  {item.label}
+                </TabsTrigger>
+              ))}
             </TabsList>
-            <TabsContent value="media" className="min-h-0">
-              <MediaBin className="h-44 border-0" />
-            </TabsContent>
-            <TabsContent value="inspector" className="min-h-0">
-              <Inspector className="h-44 border-0" />
+            <TabsContent value={panel} className="min-h-0">
+              <div className="h-52">
+                <SidePanel panel={panel} />
+              </div>
             </TabsContent>
           </Tabs>
         </div>
-        <Inspector className="hidden lg:flex" />
       </div>
       <Timeline />
       <ExportDialog />

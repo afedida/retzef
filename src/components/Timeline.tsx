@@ -213,8 +213,11 @@ export function Timeline() {
         </div>
         <div ref={scrollerRef} dir="ltr" className="min-w-0 flex-1 overflow-auto">
           <div ref={contentRef} className="relative" style={{ width }}>
-            <div className="sticky top-0 z-20 cursor-ew-resize border-b bg-[#181a20]" style={{ height: RULER }} onPointerDown={onRulerDown}>
+            <div className="sticky top-0 z-20 cursor-ew-resize border-b bg-[#252526]" style={{ height: RULER }} onPointerDown={onRulerDown}>
               <Ruler width={width} pps={pps} />
+              {project.beats.map((beat) => (
+                <span key={beat} className="pointer-events-none absolute bottom-0 z-10 h-2 w-px bg-[#0078d4]" style={{ left: beat * pps }} />
+              ))}
               {project.markers.map((marker) => (
                 <button
                   key={marker.id}
@@ -231,7 +234,7 @@ export function Timeline() {
                   <span
                     className={cn(
                       'mx-auto mt-0.5 block h-0 w-0 border-x-[5px] border-x-transparent border-t-[8px]',
-                      marker.id === selectedMarkerId ? 'border-t-white' : 'border-t-amber-300',
+                      marker.id === selectedMarkerId ? 'border-t-white' : 'border-t-[#0078d4]',
                     )}
                   />
                 </button>
@@ -290,7 +293,7 @@ export function Timeline() {
                   ))}
               </div>
             ))}
-            <div ref={playheadRef} className="pointer-events-none absolute inset-y-0 z-30 w-px bg-[#ff5d52] will-change-transform">
+            <div ref={playheadRef} className="pointer-events-none absolute inset-y-0 z-30 w-px bg-[#50e6ff] will-change-transform">
               <div
                 className="pointer-events-auto absolute top-0 h-3 w-3 -translate-x-1/2 cursor-ew-resize"
                 onPointerDown={(event) => {
@@ -298,7 +301,7 @@ export function Timeline() {
                   onRulerDown(event)
                 }}
               >
-                <div className="mx-auto h-0 w-0 border-x-[6px] border-x-transparent border-t-8 border-t-[#ff5d52]" />
+                <div className="mx-auto h-0 w-0 border-x-[6px] border-x-transparent border-t-8 border-t-[#50e6ff]" />
               </div>
             </div>
             {project.clips.length === 0 && (
@@ -317,7 +320,7 @@ export function Timeline() {
         <span>חצים הזזת קליפ</span>
         <span>M סמן</span>
         <span>Ctrl+C/V</span>
-        {status && <span className="text-amber-200">{status}</span>}
+        {status && <span className="text-[#50e6ff]">{status}</span>}
         <span className="ms-auto">Ctrl+גלגלת לזום</span>
       </div>
     </section>
@@ -349,9 +352,9 @@ function TrackToggle({
 }
 
 function swatch(track: Track): string {
-  if (track.type === 'video') return 'bg-sky-400'
-  if (track.type === 'text') return 'bg-amber-400'
-  return 'bg-emerald-400'
+  if (track.type === 'video') return 'bg-[#0078d4]'
+  if (track.type === 'text') return 'bg-[#8661c5]'
+  return 'bg-[#0e7a6b]'
 }
 
 function Ruler({ width, pps }: { width: number; pps: number }) {
@@ -393,10 +396,14 @@ function ClipBlock({
   lane: KeyLane
   asset: Asset | null
 }) {
-  const label = clip.text?.content.replaceAll('\n', ' ') || asset?.name || 'מדיה חסרה'
+  const label = clip.children?.length
+    ? 'מקונן'
+    : clip.adjustment
+      ? 'התאמה'
+      : clip.text?.content.replaceAll('\n', ' ') || asset?.name || 'מדיה חסרה'
   const peaks = asset ? slicePeaks(asset, clip) : []
   const color =
-    track.type === 'video' ? 'bg-[#2c6d96]' : track.type === 'text' ? 'bg-[#8a5a22]' : 'bg-[#1d7a4e]'
+    track.type === 'video' ? 'bg-[#0e639c]' : track.type === 'text' ? 'bg-[#5c2e91]' : 'bg-[#0e7a6b]'
 
   const begin = (event: React.PointerEvent<HTMLDivElement>, mode: 'move' | 'start' | 'end') => {
     if (event.button !== 0) return
@@ -437,8 +444,8 @@ function ClipBlock({
       className={cn(
         'absolute top-1.5 bottom-1.5 touch-none overflow-hidden rounded-md text-white shadow-sm select-none',
         color,
-        selected && 'ring-2 ring-amber-200',
-        clip.groupId && 'outline outline-1 outline-amber-100/70',
+        selected && 'ring-2 ring-[#50e6ff]',
+        clip.groupId && 'outline outline-1 outline-[#0078d4]/80',
         !asset && !clip.text && !clip.shape && 'bg-rose-900',
         track.locked && 'opacity-70',
       )}
@@ -477,7 +484,7 @@ function ClipBlock({
             key={`${key.time}:${key.value}`}
             type="button"
             aria-label="נקודת מפתח"
-            className="absolute z-20 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white bg-amber-300"
+            className="absolute z-20 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white bg-[#50e6ff]"
             style={{ left: `${key.time * 100}%`, top: `${(1 - (lane === 'scale' ? (key.value - 1) / 3 : key.value)) * 100}%` }}
             onPointerDown={(event) => {
               event.stopPropagation()

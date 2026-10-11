@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { projectDuration } from '@/lib/edit'
 import { formatClock } from '@/lib/time'
-import { presetById } from '@/types'
+import { EXPORT_PRESETS, presetById, type ExportPresetId } from '@/types'
 import {
   downloadProjectFile,
   downloadProjectPackage,
@@ -21,6 +21,7 @@ import {
   loadAnyProjectFile,
   redo,
   setExportOpen,
+  setExportPreset,
   undo,
 } from '@/state/editor'
 import { useEditor } from '@/state/hooks'
@@ -57,9 +58,9 @@ export function TopBar() {
   const preset = presetById(useEditor((state) => state.exportPreset))
 
   return (
-    <header className="flex h-14 shrink-0 items-center gap-2 border-b bg-card/80 px-3">
+    <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-[#252526] px-3">
       <div className="flex items-center gap-2 pe-2">
-        <div className="grid size-8 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">
+        <div className="grid size-7 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">
           ר
         </div>
         <div className="leading-tight">
@@ -103,9 +104,21 @@ export function TopBar() {
           }}
         />
       </div>
-      <div className="ms-auto flex items-center gap-3">
+      <div className="ms-auto flex items-center gap-2">
+        <select
+          aria-label="יחס תמונה"
+          className="h-7 rounded-full border border-border bg-background px-2 text-xs focus-visible:ring-2 focus-visible:ring-ring"
+          value={preset.id}
+          onChange={(event) => setExportPreset(event.target.value as ExportPresetId)}
+        >
+          {EXPORT_PRESETS.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
         <div dir="ltr" className="font-mono text-xs text-muted-foreground tabular-nums">
-          {formatClock(duration)} · {preset.label}
+          {formatClock(duration)}
         </div>
         <Button type="button" size="sm" disabled={duration <= 0} onClick={() => setExportOpen(true)}>
           <Download />

@@ -17,7 +17,7 @@ import {
 } from 'mediabunny'
 import { getBlob } from '@/lib/blobs'
 import { mixProjectAudio } from '@/lib/audio'
-import { projectDuration, sourceTimeAt, videoLayers } from '@/lib/edit'
+import { flattenCompounds, projectDuration, sourceTimeAt, videoLayers } from '@/lib/edit'
 import { paintFrame, type Visual } from '@/lib/paint'
 import {
   AUDIO_BITRATE,
@@ -76,6 +76,27 @@ async function advanceCursor(cursor: VideoCursor, sourceTime: number) {
   }
 }
 
+async function seekExportVideo(video: HTMLVideoElement, time: number): Promise<void> {
+  const max = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.04) : time
+  const target = Math.min(Math.max(0, time), max)
+  if (video.readyState >= 1 && Math.abs(video.currentTime - target) < 0.03) return
+  await new Promise<void>((resolve, reject) => {
+    const done = () => {
+      video.removeEventListener('seeked', done)
+      video.removeEventListener('error', fail)
+      resolve()
+    }
+    const fail = () => {
+      video.removeEventListener('seeked', done)
+      video.removeEventListener('error', fail)
+      reject(new Error('חיפוש בפריים הפוך נכשל'))
+    }
+    video.addEventListener('seeked', done)
+    video.addEventListener('error', fail)
+    video.currentTime = target
+  })
+}
+
 export async function exportProject(
   project: Project,
   assets: Asset[],
@@ -84,7 +105,8 @@ export async function exportProject(
   options?: { preset?: ExportPresetId; stream?: WritableStream<StreamTargetChunk> | null },
 ): Promise<ExportResult> {
   const preset = presetById(options?.preset ?? '1080p30')
-  const duration = projectDuration(project)
+  const timeline = flattenCompounds(project)
+  const duration = projectDuration(timeline)
   if (duration <= 0) throw new Error('אין קליפים על ציר הזמן')
   if (duration > 10 * 60) throw new Error('הייצוא בגרסה הזו מוגבל לעשר דקות')
   if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
@@ -123,7 +145,7 @@ export async function exportProject(
   onProgress({ ratio: 0.02, label: 'מכין את פס הקול' })
   const totalFrames = Math.max(1, Math.ceil(duration * preset.fps - 1e-6))
   const timelineDuration = totalFrames / preset.fps
-  const audioBuffer = await mixProjectAudio(project, assets, timelineDuration)
+  const audioBuffer = await mixProjectAudio(timeline, assets, timelineDuration)
   if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
 
   await Promise.all([
@@ -145,6 +167,7 @@ export async function exportProject(
   if (!ctx) throw new Error('לא ניתן לפתוח משטח ציור לייצוא')
 
   const opened: VideoCursor[] = []
+  const reversed: { clip: Clip; video: HTMLVideoElement; url: string }[] = []
   const images = new Map<string, ImageBitmap>()
   const assetById = new Map(assets.map((asset) => [asset.id, asset]))
 
@@ -172,7 +195,7 @@ export async function exportProject(
 
   try {
     onProgress({ ratio: 0.08, label: 'פותח את מקורות הווידאו' })
-    for (const clip of project.clips) {
+    for (const clip of timeline.clips) {
       if (!clip.assetId || clip.text) continue
       const asset = assetById.get(clip.assetId)
       const blob = getBlob(clip.assetId)
@@ -182,6 +205,20 @@ export async function exportProject(
         continue
       }
       if (asset.kind !== 'video') continue
+      if (clip.reverse) {
+        const url = URL.createObjectURL(blob)
+        const video = document.createElement('video')
+        video.muted = true
+        video.playsInline = true
+        video.preload = 'auto'
+        video.src = url
+        await new Promise<void>((resolve, reject) => {
+          video.onloadeddata = () => resolve()
+          video.onerror = () => reject(new Error('לא ניתן לפתוח קליפ הפוך'))
+        })
+        reversed.push({ clip, video, url })
+        continue
+      }
       const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS })
       const track = await input.getPrimaryVideoTrack()
       if (!track || !(await track.canDecode())) {
@@ -211,34 +248,44 @@ export async function exportProject(
     audioSource.close()
 
     const missing = new Set<string>()
-    for (const clip of project.clips) {
+    for (const clip of timeline.clips) {
       if (!clip.assetId || clip.text) continue
       const asset = assetById.get(clip.assetId)
       if (!asset) {
         missing.add(clip.id)
         continue
       }
-      if (asset.kind === 'video' && !opened.some((cursor) => cursor.clip.id === clip.id)) missing.add(clip.id)
+      if (asset.kind === 'video' && !clip.reverse && !opened.some((cursor) => cursor.clip.id === clip.id)) missing.add(clip.id)
+      if (asset.kind === 'video' && clip.reverse && !reversed.some((item) => item.clip.id === clip.id)) missing.add(clip.id)
       if (asset.kind === 'image' && !images.has(asset.id)) missing.add(clip.id)
     }
 
     for (let frame = 0; frame < totalFrames; frame++) {
       if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
       const time = frame / preset.fps
-      const layers = videoLayers(project, time)
+      const layers = videoLayers(timeline, time)
       for (const cursor of opened) {
         const layer = layers.find((item) => item.clip.id === cursor.clip.id)
         if (!layer) continue
         await advanceCursor(cursor, sourceTimeAt(cursor.clip, layer.sourceLocal))
       }
+      for (const hold of reversed) {
+        const layer = layers.find((item) => item.clip.id === hold.clip.id)
+        if (!layer) continue
+        await seekExportVideo(hold.video, sourceTimeAt(hold.clip, layer.sourceLocal))
+      }
       paintFrame(
         ctx,
-        project,
+        timeline,
         time,
         (clip): Visual => {
           if (missing.has(clip.id)) return { status: 'missing' }
           const image = clip.assetId ? images.get(clip.assetId) : undefined
           if (image) return { status: 'ready', source: image, width: image.width, height: image.height }
+          const hold = reversed.find((item) => item.clip.id === clip.id)
+          if (hold?.video && hold.video.readyState >= 2 && hold.video.videoWidth) {
+            return { status: 'ready', source: hold.video, width: hold.video.videoWidth, height: hold.video.videoHeight }
+          }
           const cursor = opened.find((item) => item.clip.id === clip.id)
           if (cursor?.current) {
             return {
@@ -282,6 +329,10 @@ export async function exportProject(
   } finally {
     canvas.remove()
     for (const cursor of opened) cursor.input.dispose()
+    for (const hold of reversed) {
+      hold.video.src = ''
+      URL.revokeObjectURL(hold.url)
+    }
     for (const image of images.values()) image.close()
   }
 }

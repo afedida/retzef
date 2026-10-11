@@ -3,10 +3,12 @@ import { ImageDown, Pause, Play, SkipBack } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { getUrl } from '@/lib/blobs'
 import { analyzeSpeech, audibleClips, clipPlaybackBuffer, loadAudioBuffer, schedulePreviewGain } from '@/lib/audio'
-import { clampSpeed, projectDuration, sourceTimeAt, updateText, videoLayers } from '@/lib/edit'
+import { clampSpeed, flattenCompounds, projectDuration, sourceTimeAt, updateText, videoLayers } from '@/lib/edit'
+import { matchPatch } from '@/lib/track'
 import { paintFrame, type Visual } from '@/lib/paint'
 import { formatTimecode } from '@/lib/time'
 import {
+  applyMotion,
   downloadThumbnail,
   endGesture,
   getPlayhead,
@@ -15,8 +17,10 @@ import {
   live,
   onTransport,
   registerFrameGrab,
+  registerPreviewGrab,
   seek,
   selectClip,
+  setStatus,
   subscribeFrames,
   togglePlay,
 } from '@/state/editor'
@@ -162,11 +166,25 @@ export function Preview() {
       const fpsNow = presetById(getState().exportPreset).fps
       const time = Math.floor(getPlayhead() * fpsNow + 1e-4) / fpsNow
       const playingNow = isPlaying()
+      const stageBox = stage.getBoundingClientRect()
+      const dpr = playingNow ? 1 : Math.min(window.devicePixelRatio || 1, 2)
+      let pixelWidth = Math.max(2, Math.round(stageBox.width * dpr))
+      let pixelHeight = Math.max(2, Math.round(stageBox.height * dpr))
+      const cap = playingNow ? 960 : 1920
+      if (pixelWidth > cap) {
+        pixelHeight = Math.max(2, Math.round((pixelHeight * cap) / pixelWidth))
+        pixelWidth = cap
+      }
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth
+        canvas.height = pixelHeight
+      }
       const assetsNow = assetById()
       const active = new Set<string>()
-      const layers = videoLayers(currentProject, time)
+      const flat = flattenCompounds(currentProject)
+      const layers = videoLayers(flat, time)
 
-      for (const clip of currentProject.clips) {
+      for (const clip of flat.clips) {
         const asset = clip.assetId ? assetsNow.get(clip.assetId) : undefined
         if (!asset || asset.kind !== 'video') continue
         active.add(clip.id)
@@ -179,8 +197,9 @@ export function Preview() {
           continue
         }
         const sourceTime = sourceTimeAt(clip, layer ? layer.sourceLocal : local)
-        if (video.playbackRate !== clampSpeed(clip.speed)) video.playbackRate = clampSpeed(clip.speed)
-        if (video.readyState >= 1 && Math.abs(video.currentTime - sourceTime) > (playingNow ? 0.2 : 0.04)) {
+        const reversed = clip.reverse
+        if (!reversed && video.playbackRate !== clampSpeed(clip.speed)) video.playbackRate = clampSpeed(clip.speed)
+        if (video.readyState >= 1 && Math.abs(video.currentTime - sourceTime) > (playingNow && !reversed ? 0.2 : 0.04)) {
           try {
             const maxTime = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.001) : sourceTime
             video.currentTime = Math.min(sourceTime, maxTime)
@@ -188,8 +207,12 @@ export function Preview() {
             /* seek can throw while metadata is loading */
           }
         }
-        if (playingNow && video.paused) void video.play().catch(() => {})
-        if (!playingNow && !video.paused) video.pause()
+        if (reversed) {
+          if (!video.paused) video.pause()
+        } else {
+          if (playingNow && video.paused) void video.play().catch(() => {})
+          if (!playingNow && !video.paused) video.pause()
+        }
       }
 
       for (const [id, video] of videosRef.current) {
@@ -215,7 +238,7 @@ export function Preview() {
         return { status: 'pending' }
       }
 
-      paintFrame(ctx, currentProject, time, visualFor, selectedRef.current)
+      paintFrame(ctx, flat, time, visualFor, selectedRef.current)
       if (timecodeRef.current) {
         const fps = presetById(getState().exportPreset).fps
         timecodeRef.current.textContent = `${formatTimecode(time, fps)} / ${formatTimecode(projectDuration(currentProject), fps)}`
@@ -224,17 +247,17 @@ export function Preview() {
 
     draw.current = render
 
-    const resize = () => {
-      const rect = stage.getBoundingClientRect()
-      const dpr = Math.min(window.devicePixelRatio || 1, 2)
-      canvas.width = Math.max(2, Math.round(rect.width * dpr))
-      canvas.height = Math.max(2, Math.round(rect.height * dpr))
-      render()
-    }
+    const resize = () => render()
     const observer = new ResizeObserver(resize)
     observer.observe(stage)
     resize()
     const unsubscribe = subscribeFrames(() => render())
+    const unregisterGrab = registerPreviewGrab(
+      () =>
+        new Promise((resolve) => {
+          canvas.toBlob((blob) => resolve(blob), 'image/png')
+        }),
+    )
     const unregister = registerFrameGrab(() => {
       canvas.toBlob((blob) => {
         if (!blob) return
@@ -251,6 +274,7 @@ export function Preview() {
       observer.disconnect()
       unsubscribe()
       unregister()
+      unregisterGrab()
     }
   }, [])
 
@@ -282,12 +306,78 @@ export function Preview() {
 
   const empty = project.clips.length === 0
 
+  const trackAt = async (nx: number, ny: number) => {
+    const current = getState()
+    const text = current.project.clips.find((clip) => clip.id === current.selectedClipId && clip.text)
+    if (!text?.text) {
+      setStatus('בחרו כתובית למעקב')
+      return
+    }
+    const flat = flattenCompounds(current.project)
+    const time = getPlayhead()
+    const videoClip = [...flat.clips].reverse().find((clip) => {
+      const asset = current.assets.find((item) => item.id === clip.assetId)
+      return asset?.kind === 'video' && time >= clip.start && time < clip.start + clip.duration
+    })
+    const video = videoClip ? videosRef.current.get(videoClip.id) : undefined
+    if (!videoClip || !video) {
+      setStatus('אין וידאו מתחת לנקודה')
+      return
+    }
+    const sample = document.createElement('canvas')
+    sample.width = 160
+    sample.height = 90
+    const context = sample.getContext('2d', { willReadFrequently: true })
+    if (!context) return
+    const paint = (sourceTime: number) =>
+      new Promise<void>((resolve) => {
+        video.pause()
+        const max = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.04) : sourceTime
+        const target = Math.min(Math.max(0, sourceTime), max)
+        if (Math.abs(video.currentTime - target) < 0.03) {
+          context.drawImage(video, 0, 0, sample.width, sample.height)
+          resolve()
+          return
+        }
+        video.addEventListener(
+          'seeked',
+          () => {
+            context.drawImage(video, 0, 0, sample.width, sample.height)
+            resolve()
+          },
+          { once: true },
+        )
+        video.currentTime = target
+      })
+    await paint(sourceTimeAt(videoClip, time - videoClip.start))
+    const size = 16
+    let originX = Math.max(0, Math.min(sample.width - size, Math.round(nx * sample.width) - size / 2))
+    let originY = Math.max(0, Math.min(sample.height - size, Math.round(ny * sample.height) - size / 2))
+    const patch = new Uint8ClampedArray(context.getImageData(originX, originY, size, size).data)
+    const points: { time: number; x: number; y: number }[] = []
+    for (let step = 0; step <= 16; step++) {
+      const local = time - videoClip.start + step * 0.12
+      if (local >= videoClip.duration) break
+      await paint(sourceTimeAt(videoClip, local))
+      const frame = context.getImageData(0, 0, sample.width, sample.height).data
+      const found = matchPatch(frame, sample.width, sample.height, patch, size, originX, originY, 18)
+      originX = found.x
+      originY = found.y
+      points.push({
+        time: time + step * 0.12,
+        x: (found.x + size / 2) / sample.width,
+        y: (found.y + size / 2) / sample.height,
+      })
+    }
+    if (points.length) applyMotion(text.id, points)
+  }
+
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-[#0c0d11]">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <div className="flex min-h-0 flex-1 items-center justify-center p-3" style={{ containerType: 'size' }}>
         <div
           ref={stageRef}
-          className="relative overflow-hidden rounded-lg bg-black shadow-2xl ring-1 ring-white/10"
+          className="relative overflow-hidden rounded-md bg-black ring-1 ring-border"
           style={{
             width: `min(100cqw, calc(100cqh * ${aspect}))`,
             height: `min(100cqh, calc(100cqw / ${aspect}))`,
@@ -302,6 +392,10 @@ export function Preview() {
               const rect = canvas.getBoundingClientRect()
               const x = (event.clientX - rect.left) / rect.width
               const y = (event.clientY - rect.top) / rect.height
+              if (getState().trackArmed) {
+                void trackAt(x, y)
+                return
+              }
               const time = getPlayhead()
               const hit = project.clips
                 .filter((clip) => clip.text && time >= clip.start && time < clip.start + clip.duration)
@@ -329,8 +423,8 @@ export function Preview() {
           {empty && (
             <div className="pointer-events-none absolute inset-0 grid place-items-center px-6 text-center">
               <div>
-                <p className="text-base font-medium text-zinc-100">אין מה להציג עדיין</p>
-                <p className="mt-1 text-sm text-zinc-400">ייבאו מדיה והניחו אותה על ציר הזמן</p>
+                <p className="text-base font-medium">אין מה להציג עדיין</p>
+                <p className="mt-1 text-sm text-muted-foreground">ייבאו מדיה והניחו אותה על ציר הזמן</p>
               </div>
             </div>
           )}
