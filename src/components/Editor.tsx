@@ -6,10 +6,10 @@ import { Preview } from '@/components/Preview'
 import { Timeline } from '@/components/Timeline'
 import { TopBar } from '@/components/TopBar'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { downloadProjectFile, getState, importFiles, redo, removeSelectedClip, seek, setPps, splitAtPlayhead, stepFrames, togglePlay, undo } from '@/state/editor'
+import { deleteSelectedMarker, downloadProjectFile, getState, importFiles, nudgeSelectedClip, placeMarker, redo, removeSelectedClip, rippleSelectedClip, seek, setPps, splitAtPlayhead, togglePlay, undo } from '@/state/editor'
 import { useEditor } from '@/state/hooks'
 
-const FRAME_STEP = 30
+const FRAME = 1 / 30
 
 export function Editor() {
   const ready = useEditor((state) => state.ready)
@@ -65,11 +65,15 @@ export function Editor() {
         splitAtPlayhead()
       } else if (event.code === 'Delete' || event.code === 'Backspace') {
         event.preventDefault()
-        removeSelectedClip()
-      } else if (event.code === 'ArrowLeft') {
-        stepFrames(event.shiftKey ? -FRAME_STEP : -1)
-      } else if (event.code === 'ArrowRight') {
-        stepFrames(event.shiftKey ? FRAME_STEP : 1)
+        if (getState().selectedMarkerId && !getState().selectedClipId) deleteSelectedMarker()
+        else if (event.shiftKey) rippleSelectedClip()
+        else removeSelectedClip()
+      } else if (event.code === 'ArrowLeft' || event.code === 'ArrowRight') {
+        event.preventDefault()
+        const direction = event.code === 'ArrowLeft' ? -1 : 1
+        nudgeSelectedClip(direction * (event.shiftKey ? 1 : FRAME))
+      } else if (event.code === 'KeyM') {
+        placeMarker()
       } else if (event.code === 'Home') {
         seek(0)
       } else if (event.code === 'Equal' || event.code === 'NumpadAdd') {

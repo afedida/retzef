@@ -1,20 +1,30 @@
 import { describe, expect, it } from 'vitest'
 import type { Asset, Clip, Project } from '@/types'
 import {
+  addTextTrack,
+  adjacentTransition,
   audioGain,
   blankProject,
   coerceProject,
   fadeEnvelope,
   insertClip,
+  keyedVolume,
+  makeMediaClip,
   makeTextClip,
   moveClip,
   preferredTrack,
   projectDuration,
+  removeTextTrack,
   resolveStart,
+  rippleDelete,
+  setSpeed,
   snapMove,
   snapValue,
   splitClip,
   trimClip,
+  videoLayers,
+  defaultColor,
+  defaultKen,
 } from '@/lib/edit'
 
 function clip(partial: Partial<Clip> & Pick<Clip, 'id'>): Clip {
@@ -28,6 +38,11 @@ function clip(partial: Partial<Clip> & Pick<Clip, 'id'>): Clip {
     fadeIn: 0,
     fadeOut: 0,
     text: null,
+    speed: 1,
+    transition: null,
+    volumeKeys: [],
+    kenBurns: defaultKen(),
+    color: defaultColor(),
     ...partial,
   }
 }
@@ -46,6 +61,7 @@ const video: Asset = {
   hasAudio: true,
   peaks: [],
   thumbnail: null,
+  mime: 'video/mp4',
 }
 
 describe('timeline edits', () => {
@@ -162,5 +178,74 @@ describe('timeline edits', () => {
     const incoming = clip({ id: 'b', start: 1, duration: 2 })
     const next = insertClip(base, incoming)
     expect(next.clips.find((item) => item.id === 'b')?.start).toBe(4)
+  })
+
+  it('limits a faster clip to the remaining source', () => {
+    const base = project([clip({ id: 'a', start: 0, duration: 8, inPoint: 0 })])
+    const sped = setSpeed(base, 'a', 2, video)
+    expect(sped.clips[0]?.speed).toBe(2)
+    expect(sped.clips[0]?.duration).toBe(5)
+  })
+
+  it('ripple-deletes and closes the gap on the same track', () => {
+    const base = project([
+      clip({ id: 'a', start: 0, duration: 2 }),
+      clip({ id: 'b', start: 2, duration: 3 }),
+      clip({ id: 'c', start: 0, duration: 4, trackId: 'v2' }),
+    ])
+    const next = rippleDelete(base, 'a')
+    expect(next.clips.find((item) => item.id === 'a')).toBeUndefined()
+    expect(next.clips.find((item) => item.id === 'b')?.start).toBe(0)
+    expect(next.clips.find((item) => item.id === 'c')?.start).toBe(0)
+  })
+
+  it('crossfades only when the clips touch', () => {
+    const left = clip({ id: 'a', start: 0, duration: 2 })
+    const right = clip({
+      id: 'b',
+      start: 2,
+      duration: 2,
+      transition: { kind: 'crossfade', duration: 0.6 },
+    })
+    const base = project([left, right])
+    expect(adjacentTransition(left, right)).toBe(0.6)
+    const mid = videoLayers(base, 2)
+    expect(mid.map((layer) => layer.clip.id).sort()).toEqual(['a', 'b'])
+    const early = videoLayers(base, 0.2)
+    expect(early).toHaveLength(1)
+    expect(early[0]?.clip.id).toBe('a')
+  })
+
+  it('interpolates volume keyframes', () => {
+    const item = clip({
+      id: 'a',
+      duration: 4,
+      volume: 1,
+      volumeKeys: [
+        { time: 0, value: 0 },
+        { time: 1, value: 1 },
+      ],
+    })
+    expect(keyedVolume(item, 2)).toBeCloseTo(0.5)
+    expect(audioGain(item, 2)).toBeCloseTo(0.5)
+  })
+
+  it('adds and removes text tracks without dropping the last one', () => {
+    const added = addTextTrack(blankProject())
+    expect(added.tracks.filter((track) => track.type === 'text')).toHaveLength(2)
+    const extra = added.tracks.find((track) => track.type === 'text' && track.id !== 't1')
+    const removed = removeTextTrack(added, extra!.id)
+    expect(removed.tracks.filter((track) => track.type === 'text')).toHaveLength(1)
+    expect(removeTextTrack(removed, 't1')).toBe(removed)
+  })
+
+  it('keeps an extra text track when reopening a project', () => {
+    const withTrack = addTextTrack(blankProject())
+    const textTrack = withTrack.tracks.find((track) => track.id !== 't1' && track.type === 'text')!
+    const title = makeTextClip(0, textTrack.id)
+    const loaded = coerceProject({ ...withTrack, clips: [title, makeMediaClip(video, 'v1', 0)] })
+    expect(loaded?.tracks.some((track) => track.id === textTrack.id)).toBe(true)
+    expect(loaded?.clips.find((item) => item.id === title.id)?.text?.font).toBe('heebo')
+    expect(loaded?.masterVolume).toBe(1)
   })
 })

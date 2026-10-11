@@ -1,5 +1,6 @@
 import { useRef, type ReactNode } from 'react'
 import {
+  Archive,
   Download,
   FolderOpen,
   Redo2,
@@ -11,11 +12,13 @@ import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { projectDuration } from '@/lib/edit'
 import { formatClock } from '@/lib/time'
+import { presetById } from '@/types'
 import {
   downloadProjectFile,
+  downloadProjectPackage,
   endGesture,
   live,
-  loadProjectFile,
+  loadAnyProjectFile,
   redo,
   setExportOpen,
   undo,
@@ -51,6 +54,7 @@ export function TopBar() {
   const canRedo = useEditor((state) => state.canRedo)
   const fileRef = useRef<HTMLInputElement>(null)
   const duration = projectDuration(project)
+  const preset = presetById(useEditor((state) => state.exportPreset))
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-2 border-b bg-card/80 px-3">
@@ -78,27 +82,30 @@ export function TopBar() {
         <ToolButton label="בצע שוב (Ctrl+Shift+Z)" disabled={!canRedo} onClick={redo}>
           <Redo2 />
         </ToolButton>
-        <ToolButton label="שמירת קובץ פרויקט" onClick={downloadProjectFile}>
+        <ToolButton label="שמירת JSON" onClick={downloadProjectFile}>
           <Save />
         </ToolButton>
-        <ToolButton label="טעינת קובץ פרויקט" onClick={() => fileRef.current?.click()}>
+        <ToolButton label="שמירת חבילה עם מדיה" onClick={() => void downloadProjectPackage()}>
+          <Archive />
+        </ToolButton>
+        <ToolButton label="טעינת JSON או חבילה" onClick={() => fileRef.current?.click()}>
           <FolderOpen />
         </ToolButton>
         <input
           ref={fileRef}
           type="file"
-          accept="application/json,.json"
+          accept="application/json,.json,.zip,application/zip"
           className="hidden"
           onChange={(event) => {
             const file = event.target.files?.[0]
-            if (file) void loadProjectFile(file)
+            if (file) void loadAnyProjectFile(file)
             event.target.value = ''
           }}
         />
       </div>
       <div className="ms-auto flex items-center gap-3">
         <div dir="ltr" className="font-mono text-xs text-muted-foreground tabular-nums">
-          {formatClock(duration)} · 1080p · 30fps
+          {formatClock(duration)} · {preset.label}
         </div>
         <Button type="button" size="sm" disabled={duration <= 0} onClick={() => setExportOpen(true)}>
           <Download />

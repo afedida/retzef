@@ -1,18 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
-import { Magnet, Minus, Plus, Scissors, Trash2 } from 'lucide-react'
+import { Flag, Magnet, Minus, Plus, Scissors, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { clipEnd, projectDuration } from '@/lib/edit'
 import { formatClock } from '@/lib/time'
 import {
+  createTextTrack,
+  deleteTextTrack,
   endGesture,
   getPlayhead,
   importFiles,
   nudgeClip,
   nudgeTrim,
   placeAsset,
+  placeMarker,
   removeSelectedClip,
+  rippleSelectedClip,
   seek,
   selectClip,
+  selectMarker,
   setPps,
   setSnap,
   splitAtPlayhead,
@@ -35,8 +40,10 @@ function assetIdFromDrop(data: DataTransfer): string | null {
 function slicePeaks(asset: Asset, clip: Clip): number[] {
   if (!asset.peaks.length) return []
   if (asset.kind === 'image' || asset.duration <= 0) return asset.peaks
+  const speed = clip.speed > 0 ? clip.speed : 1
   const start = Math.min(asset.peaks.length - 1, Math.max(0, Math.floor((clip.inPoint / asset.duration) * asset.peaks.length)))
-  const end = Math.min(asset.peaks.length, Math.max(start + 1, Math.ceil(((clip.inPoint + clip.duration) / asset.duration) * asset.peaks.length)))
+  const sourceEnd = clip.inPoint + clip.duration * speed
+  const end = Math.min(asset.peaks.length, Math.max(start + 1, Math.ceil((sourceEnd / asset.duration) * asset.peaks.length)))
   return asset.peaks.slice(start, end)
 }
 
@@ -44,6 +51,7 @@ export function Timeline() {
   const project = useEditor((state) => state.project)
   const assets = useEditor((state) => state.assets)
   const selectedClipId = useEditor((state) => state.selectedClipId)
+  const selectedMarkerId = useEditor((state) => state.selectedMarkerId)
   const snap = useEditor((state) => state.snap)
   const pps = useEditor((state) => state.pps)
   const scrollerRef = useRef<HTMLDivElement>(null)
@@ -113,6 +121,13 @@ export function Timeline() {
           <Trash2 />
           מחיקה
         </Button>
+        <Button type="button" size="sm" variant="ghost" disabled={!selectedClipId} onClick={rippleSelectedClip}>
+          מחיקה גולשת
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={placeMarker}>
+          <Flag />
+          סמן
+        </Button>
         <Button type="button" size="sm" variant={snap ? 'secondary' : 'ghost'} onClick={() => setSnap(!snap)} aria-pressed={snap}>
           <Magnet />
           הצמדה
@@ -130,19 +145,48 @@ export function Timeline() {
         </div>
       </div>
       <div className="flex min-h-0 flex-1">
-        <div className="w-24 shrink-0 border-e bg-card/50">
+        <div className="w-28 shrink-0 border-e bg-card/50">
           <div style={{ height: RULER }} />
           {project.tracks.map((track) => (
-            <div key={track.id} style={{ height: ROW }} className="flex items-center border-b px-2 text-[11px] text-muted-foreground">
-              <span className={cn('me-1.5 size-1.5 rounded-full', swatch(track))} />
-              {track.name}
+            <div key={track.id} style={{ height: ROW }} className="flex items-center gap-1 border-b px-2 text-[11px] text-muted-foreground">
+              <span className={cn('size-1.5 shrink-0 rounded-full', swatch(track))} />
+              <span className="min-w-0 flex-1 truncate">{track.name}</span>
+              {track.type === 'text' && project.tracks.filter((item) => item.type === 'text').length > 1 && (
+                <button type="button" className="text-xs" aria-label={`הסרת ${track.name}`} onClick={() => deleteTextTrack(track.id)}>
+                  ×
+                </button>
+              )}
             </div>
           ))}
+          <button type="button" className="w-full px-2 py-1 text-start text-[11px] text-primary" onClick={createTextTrack}>
+            + מסלול טקסט
+          </button>
         </div>
         <div ref={scrollerRef} dir="ltr" className="min-w-0 flex-1 overflow-auto">
           <div ref={contentRef} className="relative" style={{ width }}>
             <div className="sticky top-0 z-20 cursor-ew-resize border-b bg-[#181a20]" style={{ height: RULER }} onPointerDown={onRulerDown}>
               <Ruler width={width} pps={pps} />
+              {project.markers.map((marker) => (
+                <button
+                  key={marker.id}
+                  type="button"
+                  title={marker.label}
+                  className="absolute top-0 z-30 h-full w-3 -translate-x-1/2"
+                  style={{ left: marker.time * pps }}
+                  onPointerDown={(event) => {
+                    event.stopPropagation()
+                    seek(marker.time)
+                    selectMarker(marker.id)
+                  }}
+                >
+                  <span
+                    className={cn(
+                      'mx-auto mt-0.5 block h-0 w-0 border-x-[5px] border-x-transparent border-t-[8px]',
+                      marker.id === selectedMarkerId ? 'border-t-white' : 'border-t-amber-300',
+                    )}
+                  />
+                </button>
+              ))}
             </div>
             {project.tracks.map((track) => (
               <div
@@ -219,7 +263,9 @@ export function Timeline() {
         <span>רווח ניגון</span>
         <span>S פיצול</span>
         <span>Delete מחיקה</span>
-        <span>Ctrl+Z ביטול</span>
+        <span>Shift+Delete גלישה</span>
+        <span>חצים הזזת קליפ</span>
+        <span>M סמן</span>
         <span className="ms-auto">Ctrl+גלגלת לזום</span>
       </div>
     </section>
@@ -310,7 +356,11 @@ function ClipBlock({
       <div className="absolute inset-y-0 left-0 z-10 w-2 cursor-ew-resize" onPointerDown={(event) => begin(event, 'start')} />
       <div className="absolute inset-y-0 right-0 z-10 w-2 cursor-ew-resize" onPointerDown={(event) => begin(event, 'end')} />
       <div className="pointer-events-none relative h-full px-2 py-1">
-        <p className="truncate text-[11px] font-medium">{label}</p>
+        <p className="truncate text-[11px] font-medium">
+          {label}
+          {clip.speed !== 1 ? ` · ${clip.speed.toFixed(2)}x` : ''}
+          {clip.transition ? ' · מעבר' : ''}
+        </p>
         {peaks.length > 0 && (
           <svg viewBox={`0 0 ${peaks.length} 32`} preserveAspectRatio="none" className="absolute inset-x-1 bottom-1 h-5 opacity-70">
             <path

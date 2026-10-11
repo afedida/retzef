@@ -1,24 +1,27 @@
 import { useEffect, useRef } from 'react'
-import { Pause, Play, SkipBack } from 'lucide-react'
+import { ImageDown, Pause, Play, SkipBack } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { getUrl } from '@/lib/blobs'
 import { audibleClips, loadAudioBuffer, schedulePreviewGain } from '@/lib/audio'
-import { projectDuration, updateText } from '@/lib/edit'
+import { clampSpeed, projectDuration, sourceTimeAt, updateText, videoLayers } from '@/lib/edit'
 import { paintFrame, type Visual } from '@/lib/paint'
 import { formatTimecode } from '@/lib/time'
 import {
+  downloadThumbnail,
   endGesture,
   getPlayhead,
+  getState,
   isPlaying,
   live,
   onTransport,
+  registerFrameGrab,
   seek,
   selectClip,
   subscribeFrames,
   togglePlay,
 } from '@/state/editor'
 import { useEditor, usePlaying } from '@/state/hooks'
-import type { Asset, Clip, Project } from '@/types'
+import { presetById, type Asset, type Clip, type Project } from '@/types'
 
 class PreviewMixer {
   private ctx: AudioContext | null = null
@@ -52,14 +55,16 @@ class PreviewMixer {
       if (token !== this.token || !buffer) continue
       const local = time - clip.start
       if (local >= clip.duration) continue
-      const offset = clip.inPoint + Math.max(0, local)
+      const speed = clampSpeed(clip.speed)
+      const offset = clip.inPoint + Math.max(0, local) * speed
       if (offset >= buffer.duration) continue
-      const playFor = Math.min(clip.duration - Math.max(0, local), buffer.duration - offset)
+      const playFor = Math.min((clip.duration - Math.max(0, local)) * speed, buffer.duration - offset)
       if (playFor <= 0.01) continue
       const source = ctx.createBufferSource()
       source.buffer = buffer
+      source.playbackRate.value = speed
       const gain = ctx.createGain()
-      schedulePreviewGain(gain.gain, clip, time, now)
+      schedulePreviewGain(gain.gain, project, assets, clip, time, now)
       source.connect(gain)
       gain.connect(ctx.destination)
       const when = local < 0 ? now + (clip.start - time) : now
@@ -74,6 +79,9 @@ export function Preview() {
   const assets = useEditor((state) => state.assets)
   const selectedClipId = useEditor((state) => state.selectedClipId)
   const playing = usePlaying()
+  const exportPreset = useEditor((state) => state.exportPreset)
+  const frame = presetById(exportPreset)
+  const aspect = frame.width / frame.height
   const stageRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
@@ -152,6 +160,7 @@ export function Preview() {
       const playingNow = isPlaying()
       const assetsNow = assetById()
       const active = new Set<string>()
+      const layers = videoLayers(currentProject, time)
 
       for (const clip of currentProject.clips) {
         const asset = clip.assetId ? assetsNow.get(clip.assetId) : undefined
@@ -159,12 +168,14 @@ export function Preview() {
         active.add(clip.id)
         const video = ensureVideo(clip.id, asset.id)
         const local = time - clip.start
-        const visible = local >= -0.08 && local < clip.duration + 0.02
+        const layer = layers.find((item) => item.clip.id === clip.id)
+        const visible = Boolean(layer) || (local >= -0.08 && local < clip.duration + 0.02)
         if (!visible) {
           if (!video.paused) video.pause()
           continue
         }
-        const sourceTime = Math.max(0, clip.inPoint + Math.max(0, local))
+        const sourceTime = sourceTimeAt(clip, layer ? layer.local : Math.max(0, local))
+        if (video.playbackRate !== clampSpeed(clip.speed)) video.playbackRate = clampSpeed(clip.speed)
         if (video.readyState >= 1 && Math.abs(video.currentTime - sourceTime) > (playingNow ? 0.2 : 0.04)) {
           try {
             const maxTime = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.001) : sourceTime
@@ -219,9 +230,22 @@ export function Preview() {
     observer.observe(stage)
     resize()
     const unsubscribe = subscribeFrames(() => render())
+    const unregister = registerFrameGrab(() => {
+      canvas.toBlob((blob) => {
+        if (!blob) return
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        const safe = getState().project.name.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim() || 'retzef'
+        link.href = url
+        link.download = `${safe}-thumbnail.png`
+        link.click()
+        window.setTimeout(() => URL.revokeObjectURL(url), 1500)
+      }, 'image/png')
+    })
     return () => {
       observer.disconnect()
       unsubscribe()
+      unregister()
     }
   }, [])
 
@@ -260,8 +284,8 @@ export function Preview() {
           ref={stageRef}
           className="relative overflow-hidden rounded-lg bg-black shadow-2xl ring-1 ring-white/10"
           style={{
-            width: 'min(100cqw, calc(100cqh * 16 / 9))',
-            height: 'min(100cqh, calc(100cqw * 9 / 16))',
+            width: `min(100cqw, calc(100cqh * ${aspect}))`,
+            height: `min(100cqh, calc(100cqw / ${aspect}))`,
           }}
         >
           <canvas
@@ -318,6 +342,10 @@ export function Preview() {
         <span ref={timecodeRef} dir="ltr" className="font-mono text-xs text-muted-foreground tabular-nums">
           00:00.00 / 00:00.00
         </span>
+        <Button type="button" size="sm" variant="ghost" onClick={downloadThumbnail}>
+          <ImageDown />
+          תמונה ממוזערת
+        </Button>
         <p className="ms-auto hidden text-[11px] text-muted-foreground sm:block">גררו כתוביות בתצוגה כדי למקם אותן</p>
       </div>
     </section>

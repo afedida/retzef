@@ -6,7 +6,7 @@ import {
   type WrappedAudioBuffer,
 } from 'mediabunny'
 import { getBlob } from '@/lib/blobs'
-import { audioGain } from '@/lib/edit'
+import { audioGain, clampSpeed } from '@/lib/edit'
 import type { Asset, Clip, Project } from '@/types'
 
 const cache = new Map<string, Promise<AudioBuffer | null>>()
@@ -67,64 +67,97 @@ export function audibleClips(project: Project, assets: Asset[]): Clip[] {
   })
 }
 
+function speechAt(project: Project, assets: Asset[], time: number, duckTrackId: string): boolean {
+  const byId = new Map(assets.map((asset) => [asset.id, asset]))
+  return project.clips.some((clip) => {
+    if (clip.trackId === duckTrackId || !clip.assetId || clip.volume <= 0) return false
+    if (byId.get(clip.assetId)?.hasAudio !== true) return false
+    return time >= clip.start && time < clip.start + clip.duration
+  })
+}
+
+export function mixGain(project: Project, assets: Asset[], clip: Clip, local: number): number {
+  const track = project.tracks.find((item) => item.id === clip.trackId)
+  let duck = 1
+  if (track?.duck) {
+    const time = clip.start + local
+    const active = speechAt(project, assets, time, clip.trackId)
+    const edge = speechAt(project, assets, time - 0.12, clip.trackId) || speechAt(project, assets, time + 0.08, clip.trackId)
+    duck = active ? 0.28 : edge ? 0.62 : 1
+  }
+  return audioGain(clip, local) * project.masterVolume * duck
+}
+
 export async function mixProjectAudio(project: Project, assets: Asset[], duration: number): Promise<AudioBuffer> {
   const sampleRate = 48000
   const length = Math.max(1, Math.ceil(duration * sampleRate))
   const offline = new OfflineAudioContext(2, length, sampleRate)
+  const master = offline.createGain()
+  master.gain.value = 1
+  master.connect(offline.destination)
   const clips = audibleClips(project, assets)
   for (const clip of clips) {
     if (!clip.assetId) continue
     const buffer = await loadAudioBuffer(clip.assetId)
     if (!buffer) continue
+    const speed = clampSpeed(clip.speed)
     const offset = Math.max(0, clip.inPoint)
     if (offset >= buffer.duration) continue
-    const playFor = Math.min(clip.duration, buffer.duration - offset)
-    if (playFor <= 0.001) continue
+    const bufferSpan = Math.min(clip.duration * speed, buffer.duration - offset)
+    if (bufferSpan <= 0.001) continue
     const source = offline.createBufferSource()
     source.buffer = buffer
+    source.playbackRate.value = speed
     const gain = offline.createGain()
-    scheduleOfflineGain(gain.gain, clip)
+    scheduleGain(gain.gain, project, assets, clip, 0)
     source.connect(gain)
-    gain.connect(offline.destination)
-    source.start(Math.max(0, clip.start), offset, playFor)
+    gain.connect(master)
+    source.start(Math.max(0, clip.start), offset, bufferSpan)
   }
   return offline.startRendering()
 }
 
-function scheduleOfflineGain(param: AudioParam, clip: Clip): void {
-  const volume = Math.max(0, clip.volume)
-  const t0 = Math.max(0, clip.start)
-  const t1 = t0 + clip.duration
-  const fadeIn = Math.min(Math.max(0, clip.fadeIn), clip.duration)
-  const fadeOut = Math.min(Math.max(0, clip.fadeOut), Math.max(0, clip.duration - fadeIn))
-  param.setValueAtTime(fadeIn > 0 ? 0 : volume, t0)
-  if (fadeIn > 0) param.linearRampToValueAtTime(volume, t0 + fadeIn)
-  const fadeStart = t1 - fadeOut
-  if (fadeOut > 0 && fadeStart > t0 + fadeIn + 0.0001) param.setValueAtTime(volume, fadeStart)
-  if (fadeOut > 0) param.linearRampToValueAtTime(0, t1)
+function sampleTimes(project: Project, clip: Clip): number[] {
+  const points = new Set<number>([0, Math.max(0, clip.duration - 0.0001)])
+  if (clip.fadeIn > 0) points.add(Math.min(clip.duration, clip.fadeIn))
+  if (clip.fadeOut > 0) points.add(Math.max(0, clip.duration - clip.fadeOut))
+  for (const key of clip.volumeKeys) points.add(Math.min(clip.duration, Math.max(0, key.time * clip.duration)))
+  const duck = project.tracks.some((track) => track.id === clip.trackId && track.duck)
+  if (duck || clip.volumeKeys.length > 1) {
+    for (let local = 0.05; local < clip.duration; local += 0.05) points.add(local)
+  }
+  return [...points].sort((a, b) => a - b)
 }
 
-export function schedulePreviewGain(param: AudioParam, clip: Clip, playhead: number, now: number): void {
-  const t0 = clip.start
-  const t1 = clip.start + clip.duration
-  const fadeIn = Math.min(Math.max(0, clip.fadeIn), clip.duration)
-  const fadeOut = Math.min(Math.max(0, clip.fadeOut), Math.max(0, clip.duration - fadeIn))
-  const points: { t: number; v: number }[] = [{ t: t0, v: fadeIn > 0 ? 0 : clip.volume }]
-  if (fadeIn > 0) points.push({ t: t0 + fadeIn, v: clip.volume })
-  if (fadeOut > 0) {
-    const fadeStart = t1 - fadeOut
-    if (fadeStart > t0 + fadeIn + 0.0001) points.push({ t: fadeStart, v: clip.volume })
-    points.push({ t: t1, v: 0 })
-  }
-  const local = playhead - clip.start
-  const current = local >= 0 && local < clip.duration ? audioGain(clip, local) : 0
-  param.setValueAtTime(current, now)
-  let previous = now
-  for (const point of points) {
-    if (point.t <= playhead + 0.001) continue
-    const when = now + (point.t - playhead)
+function scheduleGain(param: AudioParam, project: Project, assets: Asset[], clip: Clip, origin: number): void {
+  let previous = -1
+  for (const local of sampleTimes(project, clip)) {
+    const when = origin + Math.max(0, clip.start + local)
     if (when <= previous) continue
-    param.linearRampToValueAtTime(Math.max(0, point.v), when)
+    const value = mixGain(project, assets, clip, local)
+    if (previous < 0) param.setValueAtTime(value, when)
+    else param.linearRampToValueAtTime(value, when)
+    previous = when
+  }
+}
+
+export function schedulePreviewGain(
+  param: AudioParam,
+  project: Project,
+  assets: Asset[],
+  clip: Clip,
+  playhead: number,
+  now: number,
+): void {
+  const localNow = playhead - clip.start
+  const current = localNow >= 0 && localNow < clip.duration ? mixGain(project, assets, clip, localNow) : 0
+  param.setValueAtTime(current, now)
+  const step = 0.05
+  let previous = now
+  for (let local = Math.max(0, localNow) + step; local < clip.duration; local += step) {
+    const when = now + (clip.start + local - playhead)
+    if (when <= previous) continue
+    param.linearRampToValueAtTime(mixGain(project, assets, clip, local), when)
     previous = when
   }
 }

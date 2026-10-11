@@ -9,28 +9,33 @@ import {
   Mp4OutputFormat,
   Output,
   Quality,
+  StreamTarget,
   canEncodeAudio,
   canEncodeVideo,
+  type StreamTargetChunk,
   type WrappedCanvas,
 } from 'mediabunny'
 import { getBlob } from '@/lib/blobs'
 import { mixProjectAudio } from '@/lib/audio'
-import { projectDuration } from '@/lib/edit'
+import { projectDuration, sourceTimeAt, videoLayers } from '@/lib/edit'
 import { paintFrame, type Visual } from '@/lib/paint'
 import {
   AUDIO_BITRATE,
-  OUTPUT_FPS,
-  OUTPUT_HEIGHT,
-  OUTPUT_WIDTH,
-  VIDEO_BITRATE,
+  presetById,
   type Asset,
   type Clip,
+  type ExportPresetId,
   type Project,
 } from '@/types'
 
 export type ExportProgress = {
   ratio: number
   label: string
+}
+
+export type ExportResult = {
+  mode: 'download' | 'file'
+  blob: Blob | null
 }
 
 type VideoCursor = {
@@ -76,26 +81,28 @@ export async function exportProject(
   assets: Asset[],
   onProgress: (progress: ExportProgress) => void,
   signal?: AbortSignal,
-): Promise<Blob> {
+  options?: { preset?: ExportPresetId; stream?: WritableStream<StreamTargetChunk> | null },
+): Promise<ExportResult> {
+  const preset = presetById(options?.preset ?? '1080p30')
   const duration = projectDuration(project)
   if (duration <= 0) throw new Error('אין קליפים על ציר הזמן')
   if (duration > 10 * 60) throw new Error('הייצוא בגרסה הזו מוגבל לעשר דקות')
   if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
 
   const highProfile = await canEncodeVideo('avc', {
-    width: OUTPUT_WIDTH,
-    height: OUTPUT_HEIGHT,
-    bitrate: VIDEO_BITRATE,
-    frameRate: OUTPUT_FPS,
+    width: preset.width,
+    height: preset.height,
+    bitrate: preset.videoBitrate,
+    frameRate: preset.fps,
     fullCodecString: HIGH_PROFILE,
   })
   const videoOk = highProfile
     ? true
     : await canEncodeVideo('avc', {
-        width: OUTPUT_WIDTH,
-        height: OUTPUT_HEIGHT,
-        bitrate: VIDEO_BITRATE,
-        frameRate: OUTPUT_FPS,
+        width: preset.width,
+        height: preset.height,
+        bitrate: preset.videoBitrate,
+        frameRate: preset.fps,
       })
   if (!videoOk) {
     throw new Error('הדפדפן לא תומך בקידוד H.264. ייצוא עובד ב-Chrome או ב-Edge.')
@@ -114,17 +121,22 @@ export async function exportProject(
   }
 
   onProgress({ ratio: 0.02, label: 'מכין את פס הקול' })
-  const totalFrames = Math.max(1, Math.ceil(duration * OUTPUT_FPS - 1e-6))
-  const timelineDuration = totalFrames / OUTPUT_FPS
+  const totalFrames = Math.max(1, Math.ceil(duration * preset.fps - 1e-6))
+  const timelineDuration = totalFrames / preset.fps
   const audioBuffer = await mixProjectAudio(project, assets, timelineDuration)
   if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
 
-  await document.fonts.load('700 72px Heebo')
+  await Promise.all([
+    document.fonts.load('700 72px Heebo'),
+    document.fonts.load('700 72px Rubik'),
+    document.fonts.load('700 72px Assistant'),
+    document.fonts.load('700 72px "Frank Ruhl Libre"'),
+  ])
   await document.fonts.ready
 
   const canvas = document.createElement('canvas')
-  canvas.width = OUTPUT_WIDTH
-  canvas.height = OUTPUT_HEIGHT
+  canvas.width = preset.width
+  canvas.height = preset.height
   canvas.style.position = 'fixed'
   canvas.style.left = '-12000px'
   canvas.style.top = '0'
@@ -136,14 +148,15 @@ export async function exportProject(
   const images = new Map<string, ImageBitmap>()
   const assetById = new Map(assets.map((asset) => [asset.id, asset]))
 
-  const target = new BufferTarget()
+  const streaming = Boolean(options?.stream)
+  const target = streaming ? new StreamTarget(options!.stream!, { chunked: true, chunkSize: 2 ** 20 }) : new BufferTarget()
   const output = new Output({
-    format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
+    format: new Mp4OutputFormat({ fastStart: streaming ? 'fragmented' : 'in-memory' }),
     target,
   })
   const videoSource = new CanvasSource(canvas, {
     codec: 'avc',
-    quality: new Quality({ bitrate: VIDEO_BITRATE }),
+    quality: new Quality({ bitrate: preset.videoBitrate }),
     keyFrameInterval: 2,
     latencyMode: 'quality',
     hardwareAcceleration: 'no-preference',
@@ -154,7 +167,7 @@ export async function exportProject(
     quality: new Quality({ bitrate: AUDIO_BITRATE }),
     fullCodecString: 'mp4a.40.2',
   })
-  output.addVideoTrack(videoSource, { frameRate: OUTPUT_FPS })
+  output.addVideoTrack(videoSource, { frameRate: preset.fps })
   output.addAudioTrack(audioSource)
 
   try {
@@ -176,12 +189,13 @@ export async function exportProject(
         continue
       }
       const sink = new CanvasSink(track)
+      const speed = clip.speed > 0 ? clip.speed : 1
       const start = Math.max(0, clip.inPoint - 0.2)
-      const end = clip.inPoint + clip.duration + 0.15
+      const end = clip.inPoint + clip.duration * speed + 0.15
       opened.push({
         clip,
-        width: asset.width || track.displayWidth || OUTPUT_WIDTH,
-        height: asset.height || track.displayHeight || OUTPUT_HEIGHT,
+        width: asset.width || track.displayWidth || preset.width,
+        height: asset.height || track.displayHeight || preset.height,
         iter: sink.canvases(start, end),
         current: null,
         next: null,
@@ -209,11 +223,12 @@ export async function exportProject(
 
     for (let frame = 0; frame < totalFrames; frame++) {
       if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
-      const time = frame / OUTPUT_FPS
+      const time = frame / preset.fps
+      const layers = videoLayers(project, time)
       for (const cursor of opened) {
-        const local = time - cursor.clip.start
-        if (local < -0.001 || local >= cursor.clip.duration) continue
-        await advanceCursor(cursor, cursor.clip.inPoint + local)
+        const layer = layers.find((item) => item.clip.id === cursor.clip.id)
+        if (!layer) continue
+        await advanceCursor(cursor, sourceTimeAt(cursor.clip, layer.local))
       }
       paintFrame(
         ctx,
@@ -236,7 +251,7 @@ export async function exportProject(
         },
         null,
       )
-      await videoSource.add(time, 1 / OUTPUT_FPS)
+      await videoSource.add(time, 1 / preset.fps)
       if (frame % 4 === 0 || frame === totalFrames - 1) {
         onProgress({
           ratio: 0.15 + 0.8 * ((frame + 1) / totalFrames),
@@ -249,10 +264,13 @@ export async function exportProject(
     videoSource.close()
     onProgress({ ratio: 0.97, label: 'סוגר את קובץ ה-MP4' })
     await output.finalize()
-    const buffer = target.buffer
-    if (!buffer) throw new Error('הייצוא הסתיים בלי נתונים')
+    if (streaming) {
+      onProgress({ ratio: 1, label: 'הקובץ נשמר' })
+      return { mode: 'file', blob: null }
+    }
+    if (!(target instanceof BufferTarget) || !target.buffer) throw new Error('הייצוא הסתיים בלי נתונים')
     onProgress({ ratio: 1, label: 'הקובץ מוכן' })
-    return new Blob([buffer], { type: 'video/mp4' })
+    return { mode: 'download', blob: new Blob([target.buffer], { type: 'video/mp4' }) }
   } catch (error) {
     try {
       await output.cancel()

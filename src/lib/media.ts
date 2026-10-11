@@ -20,6 +20,7 @@ export async function probeFile(file: File): Promise<{
   width: number
   height: number
   hasAudio: boolean
+  mime: string
   blob: Blob
 }> {
   if (sniffKind(file) === 'image') {
@@ -27,7 +28,7 @@ export async function probeFile(file: File): Promise<{
     const width = bitmap.width
     const height = bitmap.height
     bitmap.close()
-    return { name: file.name, kind: 'image', duration: 0, width, height, hasAudio: false, blob: file }
+    return { name: file.name, kind: 'image', duration: 0, width, height, hasAudio: false, mime: file.type || 'image/png', blob: file }
   }
 
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS })
@@ -43,6 +44,7 @@ export async function probeFile(file: File): Promise<{
       width: video?.displayWidth ?? 0,
       height: video?.displayHeight ?? 0,
       hasAudio: Boolean(audio),
+      mime: file.type || (video ? 'video/mp4' : 'audio/mpeg'),
       blob: file,
     }
   } catch (error) {

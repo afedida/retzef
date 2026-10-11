@@ -9,10 +9,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { exportProject } from '@/lib/exportVideo'
+import { pickMp4Stream } from '@/lib/saveFile'
 import { projectDuration } from '@/lib/edit'
 import { formatClock } from '@/lib/time'
-import { setExportOpen } from '@/state/editor'
+import { setExportOpen, setExportPreset } from '@/state/editor'
 import { useEditor } from '@/state/hooks'
+import { EXPORT_PRESETS, presetById } from '@/types'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
@@ -23,21 +25,25 @@ export function ExportDialog() {
   const open = useEditor((state) => state.exportOpen)
   const project = useEditor((state) => state.project)
   const assets = useEditor((state) => state.assets)
+  const presetId = useEditor((state) => state.exportPreset)
+  const preset = presetById(presetId)
   const [label, setLabel] = useState('מוכן לייצוא')
   const [ratio, setRatio] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [resultSize, setResultSize] = useState(0)
+  const [savedToDisk, setSavedToDisk] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const duration = projectDuration(project)
-  const estimate = duration * ((8_000_000 + 192_000) / 8)
+  const estimate = duration * ((preset.videoBitrate + 192_000) / 8)
 
   const close = () => {
     abortRef.current?.abort()
     abortRef.current = null
     if (resultUrl) URL.revokeObjectURL(resultUrl)
     setResultUrl(null)
+    setSavedToDisk(false)
     setRunning(false)
     setRatio(0)
     setError(null)
@@ -51,10 +57,22 @@ export function ExportDialog() {
     setRatio(0)
     if (resultUrl) URL.revokeObjectURL(resultUrl)
     setResultUrl(null)
+    setSavedToDisk(false)
     const controller = new AbortController()
     abortRef.current = controller
+    const safe = project.name.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim() || 'retzef'
+    let stream: Awaited<ReturnType<typeof pickMp4Stream>> = null
     try {
-      const blob = await exportProject(
+      stream = await pickMp4Stream(`${safe}.mp4`)
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === 'AbortError') {
+        setRunning(false)
+        return
+      }
+      stream = null
+    }
+    try {
+      const result = await exportProject(
         project,
         assets,
         (progress) => {
@@ -62,15 +80,19 @@ export function ExportDialog() {
           setLabel(progress.label)
         },
         controller.signal,
+        { preset: presetId, stream },
       )
-      const url = URL.createObjectURL(blob)
-      setResultUrl(url)
-      setResultSize(blob.size)
-      const link = document.createElement('a')
-      const safe = project.name.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim() || 'retzef'
-      link.href = url
-      link.download = `${safe}.mp4`
-      link.click()
+      if (result.blob) {
+        const url = URL.createObjectURL(result.blob)
+        setResultUrl(url)
+        setResultSize(result.blob.size)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = `${safe}.mp4`
+        link.click()
+      } else {
+        setSavedToDisk(true)
+      }
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'AbortError') {
         setError('הייצוא בוטל')
@@ -89,10 +111,25 @@ export function ExportDialog() {
         <DialogHeader>
           <DialogTitle>ייצוא ליוטיוב</DialogTitle>
           <DialogDescription>
-            MP4 עם H.264 ו-AAC, 1920×1080, 30fps. הקידוד רץ במחשב, בלי שרת.
+            MP4 עם H.264 ו-AAC. אם הדפדפן מאפשר, הקובץ נכתב ישר לדיסק. אחרת הוא יורד בסוף.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
+          <label className="block space-y-1 text-xs">
+            <span className="text-muted-foreground">פורמט</span>
+            <select
+              className="h-8 w-full rounded-md border bg-background px-2 text-sm"
+              value={presetId}
+              disabled={running}
+              onChange={(event) => setExportPreset(event.target.value as typeof presetId)}
+            >
+              {EXPORT_PRESETS.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label} · {item.width}×{item.height}
+                </option>
+              ))}
+            </select>
+          </label>
           <dl className="grid grid-cols-2 gap-2 text-xs">
             <div className="rounded-md bg-muted/60 px-2 py-1.5">
               <dt className="text-muted-foreground">אורך</dt>
@@ -110,6 +147,7 @@ export function ExportDialog() {
             <p className="text-xs text-muted-foreground">{label}</p>
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
+          {savedToDisk && <p className="text-sm">הקובץ נשמר במיקום שבחרת.</p>}
           {resultUrl && (
             <div className="space-y-1">
               <video src={resultUrl} controls className="aspect-video w-full rounded-md bg-black" />

@@ -34,11 +34,11 @@ export async function saveAsset(asset: Asset, blob: Blob): Promise<void> {
   db.close()
 }
 
-export async function deleteStoredAsset(id: string): Promise<void> {
+export async function deleteStoredAsset(id: string, dropMemory = true): Promise<void> {
   const db = await openDb()
   await requestToPromise(db.transaction('assets', 'readwrite').objectStore('assets').delete(id))
   db.close()
-  dropBlob(id)
+  if (dropMemory) dropBlob(id)
 }
 
 export async function loadStoredAssets(): Promise<AssetRecord[]> {

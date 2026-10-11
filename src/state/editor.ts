@@ -1,8 +1,11 @@
 import { forgetAudio, peakEnvelope } from '@/lib/audio'
-import { getBlob, getUrl, putBlob } from '@/lib/blobs'
+import { dropBlob, getBlob, getUrl, putBlob } from '@/lib/blobs'
 import { deleteStoredAsset, loadStoredAssets, loadStoredProject, saveAsset, saveProject } from '@/lib/db'
 import {
+  addMarker,
+  addTextTrack,
   blankProject,
+  clearVolumeKeys,
   clipsTouching,
   coerceProject,
   deleteClip,
@@ -13,16 +16,26 @@ import {
   moveClip,
   preferredTrack,
   projectDuration,
+  referencedAssetIds,
+  removeMarker,
+  removeTextTrack,
+  rippleDelete,
   setClipEnd,
   setClipStart,
+  setMasterVolume,
+  setSpeed,
+  setTrackDuck,
+  setTransition,
   snapPoints,
   splitClip,
   trimClip,
   updateClip,
   updateText,
+  upsertVolumeKey,
 } from '@/lib/edit'
 import { captureImageThumbnail, captureVideoThumbnail, probeFile, readProjectFile } from '@/lib/media'
-import { OUTPUT_FPS, type Asset, type Project, type TextStyle } from '@/types'
+import { packProject, unpackProject } from '@/lib/package'
+import { OUTPUT_FPS, type Asset, type ExportPresetId, type KenBurns, type ColorGrade, type Project, type TextStyle, type Transition } from '@/types'
 
 export type EditorState = {
   ready: boolean
@@ -34,6 +47,8 @@ export type EditorState = {
   pps: number
   importError: string | null
   exportOpen: boolean
+  exportPreset: ExportPresetId
+  selectedMarkerId: string | null
   canUndo: boolean
   canRedo: boolean
 }
@@ -42,6 +57,9 @@ const history = {
   past: [] as Project[],
   future: [] as Project[],
 }
+
+const shelf = new Map<string, Asset>()
+let textTrackId: string | null = null
 
 let gestureBase: Project | null = null
 let saveTimer = 0
@@ -56,6 +74,8 @@ const state: EditorState = {
   pps: 72,
   importError: null,
   exportOpen: false,
+  exportPreset: '1080p30',
+  selectedMarkerId: null,
   canUndo: false,
   canRedo: false,
 }
@@ -97,6 +117,31 @@ function scheduleSave() {
   }, 350)
 }
 
+function projectsInMemory(): Project[] {
+  return [...history.past, state.project, ...history.future, ...(gestureBase ? [gestureBase] : [])]
+}
+
+function syncShelf() {
+  const live = referencedAssetIds(projectsInMemory())
+  for (const id of [...shelf.keys()]) {
+    if (live.has(id)) continue
+    shelf.delete(id)
+    dropBlob(id)
+    forgetAudio(id)
+  }
+  const needed = referencedAssetIds([state.project])
+  const restored: Asset[] = []
+  for (const id of needed) {
+    if (state.assets.some((asset) => asset.id === id)) continue
+    const kept = shelf.get(id)
+    const blob = getBlob(id)
+    if (!kept || !blob) continue
+    restored.push(kept)
+    void saveAsset(kept, blob)
+  }
+  if (restored.length) state.assets = [...state.assets, ...restored]
+}
+
 function commit(mutator: (project: Project) => Project) {
   endGesture()
   const previous = state.project
@@ -109,6 +154,10 @@ function commit(mutator: (project: Project) => Project) {
   if (state.selectedClipId && !next.clips.some((clip) => clip.id === state.selectedClipId)) {
     state.selectedClipId = null
   }
+  if (state.selectedMarkerId && !next.markers.some((marker) => marker.id === state.selectedMarkerId)) {
+    state.selectedMarkerId = null
+  }
+  syncShelf()
   touchHistory()
   scheduleSave()
   emit()
@@ -140,6 +189,7 @@ export function undo() {
   if (state.selectedClipId && !previous.clips.some((clip) => clip.id === state.selectedClipId)) {
     state.selectedClipId = null
   }
+  syncShelf()
   touchHistory()
   scheduleSave()
   emit()
@@ -151,6 +201,7 @@ export function redo() {
   if (!next) return
   history.past.push(state.project)
   state.project = next
+  syncShelf()
   touchHistory()
   scheduleSave()
   emit()
@@ -158,8 +209,21 @@ export function redo() {
 
 export function selectClip(id: string | null) {
   state.selectedClipId = id
+  if (id) state.selectedMarkerId = null
   const clip = state.project.clips.find((item) => item.id === id)
   state.selectedAssetId = clip?.assetId ?? state.selectedAssetId
+  if (clip?.text) textTrackId = clip.trackId
+  emit()
+}
+
+export function selectMarker(id: string | null) {
+  state.selectedMarkerId = id
+  if (id) state.selectedClipId = null
+  emit()
+}
+
+export function setExportPreset(preset: ExportPresetId) {
+  state.exportPreset = preset
   emit()
 }
 
@@ -200,11 +264,104 @@ export function placeAsset(assetId: string, time: number, trackId?: string) {
   emit()
 }
 
-export function addTextClip() {
-  const clip = makeTextClip(playhead)
+export function addTextClip(trackId?: string) {
+  const texts = state.project.tracks.filter((track) => track.type === 'text')
+  const selected = state.project.clips.find((clip) => clip.id === state.selectedClipId)
+  const preferred = textTrackId && texts.some((item) => item.id === textTrackId) ? textTrackId : null
+  const track =
+    trackId && texts.some((item) => item.id === trackId)
+      ? trackId
+      : preferred
+        ? preferred
+        : selected && texts.some((item) => item.id === selected.trackId)
+          ? selected.trackId
+          : (texts[0]?.id ?? 't1')
+  const clip = makeTextClip(playhead, track)
   commit((project) => insertClip(project, clip))
   state.selectedClipId = clip.id
   emit()
+}
+
+export function createTextTrack() {
+  commit(addTextTrack)
+  const texts = state.project.tracks.filter((track) => track.type === 'text')
+  textTrackId = texts[texts.length - 1]?.id ?? null
+}
+
+export function deleteTextTrack(trackId: string) {
+  commit((project) => removeTextTrack(project, trackId))
+}
+
+export function toggleTrackDuck(trackId: string, duck: boolean) {
+  commit((project) => setTrackDuck(project, trackId, duck))
+}
+
+export function liveMaster(volume: number) {
+  live((base) => setMasterVolume(base, volume))
+}
+
+export function liveSpeed(clipId: string, speed: number) {
+  const clip = state.project.clips.find((item) => item.id === clipId)
+  live((base) => setSpeed(base, clipId, speed, assetOf(clip?.assetId ?? null)))
+}
+
+export function liveKen(clipId: string, patch: Partial<KenBurns>) {
+  live((base) => {
+    const clip = base.clips.find((item) => item.id === clipId)
+    if (!clip) return base
+    return updateClip(base, clipId, { kenBurns: { ...clip.kenBurns, ...patch } })
+  })
+}
+
+export function liveColor(clipId: string, patch: Partial<ColorGrade>) {
+  live((base) => {
+    const clip = base.clips.find((item) => item.id === clipId)
+    if (!clip) return base
+    return updateClip(base, clipId, { color: { ...clip.color, ...patch } })
+  })
+}
+
+export function liveTransition(clipId: string, transition: Transition | null) {
+  live((base) => setTransition(base, clipId, transition))
+}
+
+export function addVolumeKeyAtPlayhead() {
+  const id = state.selectedClipId
+  const clip = state.project.clips.find((item) => item.id === id)
+  if (!id || !clip || clip.text) return
+  commit((project) => upsertVolumeKey(project, id, playhead, clip.volume))
+}
+
+export function removeVolumeKeys(clipId: string) {
+  commit((project) => clearVolumeKeys(project, clipId))
+}
+
+export function nudgeSelectedClip(delta: number) {
+  const id = state.selectedClipId
+  if (!id) {
+    seek(playhead + delta)
+    return
+  }
+  const clip = state.project.clips.find((item) => item.id === id)
+  if (!clip) return
+  commit((project) => moveClip(project, id, clip.start + delta, clip.trackId, [], 0, assetMap()))
+}
+
+export function rippleSelectedClip() {
+  if (!state.selectedClipId) return
+  const id = state.selectedClipId
+  commit((project) => rippleDelete(project, id))
+}
+
+export function placeMarker() {
+  commit((project) => addMarker(project, playhead))
+}
+
+export function deleteSelectedMarker() {
+  if (!state.selectedMarkerId) return
+  const id = state.selectedMarkerId
+  state.selectedMarkerId = null
+  commit((project) => removeMarker(project, id))
 }
 
 export function removeSelectedClip() {
@@ -288,6 +445,7 @@ export async function importFiles(files: File[]): Promise<Asset[]> {
         hasAudio: probed.hasAudio,
         peaks: [],
         thumbnail: null,
+        mime: probed.mime,
       }
       putBlob(asset.id, probed.blob)
       await saveAsset(asset, probed.blob)
@@ -346,11 +504,13 @@ export async function loadSampleMedia(): Promise<void> {
 }
 
 export async function removeAsset(assetId: string) {
+  const asset = state.assets.find((item) => item.id === assetId)
+  if (asset) shelf.set(assetId, asset)
   commit((project) => deleteClipsForAsset(project, assetId))
-  state.assets = state.assets.filter((asset) => asset.id !== assetId)
+  state.assets = state.assets.filter((item) => item.id !== assetId)
   if (state.selectedAssetId === assetId) state.selectedAssetId = null
-  forgetAudio(assetId)
-  await deleteStoredAsset(assetId)
+  await deleteStoredAsset(assetId, false)
+  syncShelf()
   emit()
 }
 
@@ -368,6 +528,75 @@ export function downloadProjectFile() {
   link.download = `${safe}.retzef.json`
   link.click()
   window.setTimeout(() => URL.revokeObjectURL(url), 1500)
+}
+
+function saveBlob(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500)
+}
+
+function safeName(name: string, fallback: string): string {
+  return name.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim() || fallback
+}
+
+export async function downloadProjectPackage() {
+  const bytes = await packProject(state.project, state.assets)
+  const copy = new Uint8Array(bytes.byteLength)
+  copy.set(bytes)
+  saveBlob(`${safeName(state.project.name, 'retzef')}.retzef.zip`, new Blob([copy], { type: 'application/zip' }))
+}
+
+export async function loadProjectPackage(file: File) {
+  try {
+    const unpacked = await unpackProject(file)
+    history.past.push(state.project)
+    history.future = []
+    state.project = unpacked.project
+    const incoming = new Map(state.assets.map((asset) => [asset.id, asset]))
+    for (const item of unpacked.assets) {
+      putBlob(item.asset.id, item.blob)
+      shelf.set(item.asset.id, item.asset)
+      incoming.set(item.asset.id, item.asset)
+      await saveAsset(item.asset, item.blob)
+      void enrichAsset(item.asset.id)
+    }
+    state.assets = [...incoming.values()]
+    state.selectedClipId = null
+    state.selectedMarkerId = null
+    state.importError = null
+    syncShelf()
+    touchHistory()
+    scheduleSave()
+    emit()
+  } catch (error) {
+    state.importError = error instanceof Error ? error.message : 'טעינת החבילה נכשלה'
+    emit()
+  }
+}
+
+export async function loadAnyProjectFile(file: File) {
+  if (file.name.endsWith('.zip') || file.type === 'application/zip') {
+    await loadProjectPackage(file)
+    return
+  }
+  await loadProjectFile(file)
+}
+
+let frameGrab: (() => void) | null = null
+
+export function registerFrameGrab(grab: () => void): () => void {
+  frameGrab = grab
+  return () => {
+    if (frameGrab === grab) frameGrab = null
+  }
+}
+
+export function downloadThumbnail() {
+  frameGrab?.()
 }
 
 export async function loadProjectFile(file: File) {
@@ -403,7 +632,12 @@ async function boot() {
     for (const record of records) {
       const { blob, ...asset } = record
       putBlob(asset.id, blob)
-      loaded.push(asset)
+      loaded.push({
+        ...asset,
+        mime: asset.mime || blob.type || '',
+        peaks: asset.peaks ?? [],
+        thumbnail: asset.thumbnail ?? null,
+      })
     }
     state.assets = loaded
     if (project) state.project = project

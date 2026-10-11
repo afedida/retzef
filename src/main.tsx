@@ -6,7 +6,12 @@ import App from './App.tsx'
 import './index.css'
 
 void initEditor()
-void document.fonts.load('700 72px Heebo')
+void Promise.all([
+  document.fonts.load('700 72px Heebo'),
+  document.fonts.load('700 72px Rubik'),
+  document.fonts.load('700 72px Assistant'),
+  document.fonts.load('700 72px "Frank Ruhl Libre"'),
+])
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
