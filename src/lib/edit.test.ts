@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { mixGain } from '@/lib/audio'
 import type { Asset, Clip, Project } from '@/types'
 import {
   addTextTrack,
@@ -14,6 +15,7 @@ import {
   moveClip,
   preferredTrack,
   projectDuration,
+  setTrackVolume,
   removeTextTrack,
   resolveStart,
   rippleDelete,
@@ -131,6 +133,7 @@ describe('timeline edits', () => {
     const base = project([clip({ id: 'a', start: 0, duration: 4 })])
     expect(preferredTrack(base, 'video', 1, 2)).toBe('v2')
     expect(preferredTrack(base, 'audio', 0, 3)).toBe('a2')
+    expect(preferredTrack(base, 'audio', 0, 3, 'a1')).toBe('a1')
   })
 
   it('fades audio in and out', () => {
@@ -230,5 +233,61 @@ describe('timeline edits', () => {
     expect(loaded?.tracks.some((track) => track.id === textTrack.id)).toBe(true)
     expect(loaded?.clips.find((item) => item.id === title.id)?.text?.font).toBe('heebo')
     expect(loaded?.masterVolume).toBe(1)
+  })
+
+  it('starts with voiceover and music, and ducks music', () => {
+    const fresh = blankProject()
+    expect(fresh.tracks.find((track) => track.id === 'a1')).toMatchObject({ name: 'קריינות', duck: false, volume: 1 })
+    expect(fresh.tracks.find((track) => track.id === 'a2')).toMatchObject({ name: 'מוזיקה', duck: true, volume: 1 })
+  })
+
+  it('renames legacy audio tracks, ducks music once, and keeps clips', () => {
+    const loaded = coerceProject({
+      name: 'ישן',
+      tracks: [
+        { id: 'v1', type: 'video', name: 'וידאו 1' },
+        { id: 't1', type: 'text', name: 'טקסט' },
+        { id: 'a1', type: 'audio', name: 'שמע', duck: false },
+        { id: 'a2', type: 'audio', name: 'מוזיקה', duck: false },
+        { id: 'a3', type: 'audio', name: 'אפקטים', duck: false },
+      ],
+      clips: [
+        { id: 'vo', trackId: 'a1', assetId: 'mic', start: 0, duration: 2, inPoint: 0, volume: 0.8 },
+        { id: 'fx', trackId: 'a3', assetId: 'fx', start: 1, duration: 1, inPoint: 0, volume: 1 },
+      ],
+    })
+    expect(loaded?.tracks.find((track) => track.id === 'a1')?.name).toBe('קריינות')
+    expect(loaded?.tracks.find((track) => track.id === 'a2')).toMatchObject({ name: 'מוזיקה', duck: true, volume: 1 })
+    expect(loaded?.tracks.find((track) => track.id === 'a3')?.name).toBe('אפקטים')
+    expect(loaded?.clips.map((item) => `${item.id}:${item.trackId}`)).toEqual(['vo:a1', 'fx:a3'])
+    const kept = coerceProject({
+      clips: [],
+      tracks: loaded?.tracks.map((track) => (track.id === 'a2' ? { ...track, duck: false } : track)),
+    })
+    expect(kept?.tracks.find((track) => track.id === 'a2')?.duck).toBe(false)
+  })
+
+  it('adds missing voiceover and music tracks without dropping clips', () => {
+    const loaded = coerceProject({
+      clips: [{ id: 'v', trackId: 'v1', assetId: 'a', start: 0, duration: 2, inPoint: 0, volume: 1 }],
+      tracks: [
+        { id: 'v1', type: 'video', name: 'וידאו 1' },
+        { id: 't1', type: 'text', name: 'טקסט' },
+        { id: 'sfx', type: 'audio', name: 'אפקטים' },
+      ],
+    })
+    const ids = loaded?.tracks.map((track) => track.id) ?? []
+    expect(loaded?.tracks.find((track) => track.id === 'a1')?.name).toBe('קריינות')
+    expect(loaded?.tracks.find((track) => track.id === 'a2')).toMatchObject({ name: 'מוזיקה', duck: true })
+    expect(ids.indexOf('a1')).toBeLessThan(ids.indexOf('a2'))
+    expect(loaded?.clips[0]?.trackId).toBe('v1')
+    expect(loaded?.tracks.find((track) => track.id === 'sfx')?.name).toBe('אפקטים')
+  })
+
+  it('scales mix gain by the audio track volume', () => {
+    const quieter = setTrackVolume(blankProject(), 'a2', 0.5)
+    const tracks = quieter.tracks.map((track) => (track.id === 'a2' ? { ...track, duck: false } : track))
+    const item = clip({ id: 'm', trackId: 'a2', assetId: 'song', duration: 4, volume: 0.8 })
+    expect(mixGain({ ...quieter, tracks }, [], item, 1)).toBeCloseTo(0.4)
   })
 })

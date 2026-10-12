@@ -157,7 +157,8 @@ export function mixGain(project: Project, assets: Asset[], clip: Clip, local: nu
     const level = speechRegions.length ? speechLevelAt(time, speechRegions, attack, release) : overlapLevel(project, assets, time, clip.trackId, attack, release)
     duck = 1 - amount * level
   }
-  return audioGain(clip, local) * (project.masterVolume ?? 1) * duck
+  const trackVolume = track?.type === 'audio' ? Math.min(1, Math.max(0, track.volume ?? 1)) : 1
+  return audioGain(clip, local) * (project.masterVolume ?? 1) * trackVolume * duck
 }
 
 const playbackCache = new Map<string, Promise<AudioBuffer>>()

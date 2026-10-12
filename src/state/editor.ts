@@ -38,6 +38,7 @@ import {
   setSpeed,
   setTrackDuck,
   setTrackFlag,
+  setTrackVolume,
   setTransition,
   snapPoints,
   splitClip,
@@ -343,6 +344,17 @@ export function deleteTextTrack(trackId: string) {
 
 export function toggleTrackDuck(trackId: string, duck: boolean) {
   commit((project) => setTrackDuck(project, trackId, duck))
+}
+
+export function liveTrackVolume(trackId: string, volume: number) {
+  live((project) => setTrackVolume(project, trackId, volume))
+}
+
+export function placeMic(assetId: string, time: number) {
+  const voice =
+    state.project.tracks.find((track) => track.type === 'audio' && track.id === 'a1') ??
+    state.project.tracks.find((track) => track.type === 'audio' && track.name === 'קריינות')
+  placeAsset(assetId, time, voice?.id ?? 'a1')
 }
 
 export function liveMaster(volume: number) {

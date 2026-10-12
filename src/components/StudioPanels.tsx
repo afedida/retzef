@@ -17,6 +17,7 @@ import {
   markBeats,
   nestSelection,
   placeAsset,
+  placeMic,
   reframeShorts,
   refreshVersions,
   rememberVersion,
@@ -229,7 +230,9 @@ export function RecordPanel() {
         const file = new File([blob], name, { type })
         void importFiles([file]).then((assets) => {
           const asset = assets[0]
-          if (asset) placeAsset(asset.id, getPlayhead())
+          if (!asset) return
+          if (kind === 'mic') placeMic(asset.id, getPlayhead())
+          else placeAsset(asset.id, getPlayhead())
         })
         stream.getTracks().forEach((track) => track.stop())
         setRecorder(null)

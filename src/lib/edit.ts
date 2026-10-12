@@ -641,6 +641,7 @@ export function addTextTrack(project: Project): Project {
     type: 'text',
     name: `טקסט ${count}`,
     duck: false,
+    volume: 1,
     locked: false,
     muted: false,
     solo: false,
@@ -667,6 +668,14 @@ export function setTrackDuck(project: Project, trackId: string, duck: boolean): 
   return {
     ...project,
     tracks: project.tracks.map((track) => (track.id === trackId && track.type === 'audio' ? { ...track, duck } : track)),
+  }
+}
+
+export function setTrackVolume(project: Project, trackId: string, volume: number): Project {
+  const next = Math.min(1, Math.max(0, volume))
+  return {
+    ...project,
+    tracks: project.tracks.map((track) => (track.id === trackId && track.type === 'audio' ? { ...track, volume: next } : track)),
   }
 }
 
@@ -832,6 +841,28 @@ function coerceFrame(value: unknown): FrameBox {
   }
 }
 
+function canonicalAudioName(id: string, name: string): string {
+  if (id === 'a1' && (name === 'שמע' || name === 'a1')) return 'קריינות'
+  if (id === 'a2' && (name === 'a2' || name === 'שמע')) return 'מוזיקה'
+  return name
+}
+
+function insertAudioTrack(tracks: Track[], id: 'a1' | 'a2') {
+  if (tracks.some((track) => track.id === id)) return
+  const source = DEFAULT_TRACKS.find((track) => track.id === id)
+  if (!source) return
+  const track = { ...source }
+  if (id === 'a2') {
+    const voice = tracks.findIndex((item) => item.id === 'a1')
+    if (voice !== -1) {
+      tracks.splice(voice + 1, 0, track)
+      return
+    }
+  }
+  const audioAt = tracks.findIndex((item) => item.type === 'audio')
+  tracks.splice(audioAt === -1 ? tracks.length : audioAt, 0, track)
+}
+
 function coerceTracks(value: unknown): Track[] {
   if (!Array.isArray(value)) return DEFAULT_TRACKS.map((track) => ({ ...track }))
   const tracks: Track[] = []
@@ -840,11 +871,14 @@ function coerceTracks(value: unknown): Track[] {
     const raw = item as Partial<Track>
     if (typeof raw.id !== 'string' || !raw.id) continue
     if (raw.type !== 'video' && raw.type !== 'audio' && raw.type !== 'text') continue
+    const legacy = typeof raw.volume !== 'number' || !Number.isFinite(raw.volume)
+    const name = canonicalAudioName(raw.id, typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : raw.id)
     tracks.push({
       id: raw.id,
       type: raw.type,
-      name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : raw.id,
-      duck: raw.duck === true,
+      name,
+      duck: legacy && raw.id === 'a2' && raw.type === 'audio' ? true : raw.duck === true,
+      volume: legacy ? 1 : Math.min(1, Math.max(0, raw.volume as number)),
       locked: raw.locked === true,
       muted: raw.muted === true,
       solo: raw.solo === true,
@@ -861,12 +895,15 @@ function coerceTracks(value: unknown): Track[] {
       type: 'text',
       name: 'טקסט',
       duck: false,
+      volume: 1,
       locked: false,
       muted: false,
       solo: false,
       hidden: false,
     })
   }
+  insertAudioTrack(tracks, 'a1')
+  insertAudioTrack(tracks, 'a2')
   return tracks
 }
 
@@ -954,7 +991,7 @@ function coerceChildren(value: unknown, trackId: string, tracks: Track[]): Clip[
     ? tracks
     : [
         ...tracks,
-        { id: trackId, type: 'video' as const, name: trackId, duck: false, locked: false, muted: false, solo: false, hidden: false },
+        { id: trackId, type: 'video' as const, name: trackId, duck: false, volume: 1, locked: false, muted: false, solo: false, hidden: false },
       ]
   const children: Clip[] = []
   for (const item of value) {

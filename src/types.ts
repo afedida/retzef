@@ -185,6 +185,7 @@ export type Track = {
   type: TrackType
   name: string
   duck: boolean
+  volume: number
   locked: boolean
   muted: boolean
   solo: boolean
@@ -241,14 +242,14 @@ export function emptyKeys(): ClipKeys {
   return { volume: [], opacity: [], scale: [], x: [], y: [] }
 }
 
-const TRACK_FLAGS = { locked: false, muted: false, solo: false, hidden: false }
+const TRACK_FLAGS = { volume: 1, locked: false, muted: false, solo: false, hidden: false }
 
 export const DEFAULT_TRACKS: Track[] = [
   { id: 'v2', type: 'video', name: 'וידאו 2', duck: false, ...TRACK_FLAGS },
   { id: 'v1', type: 'video', name: 'וידאו 1', duck: false, ...TRACK_FLAGS },
   { id: 't1', type: 'text', name: 'טקסט', duck: false, ...TRACK_FLAGS },
-  { id: 'a1', type: 'audio', name: 'שמע', duck: false, ...TRACK_FLAGS },
-  { id: 'a2', type: 'audio', name: 'מוזיקה', duck: false, ...TRACK_FLAGS },
+  { id: 'a1', type: 'audio', name: 'קריינות', duck: false, ...TRACK_FLAGS },
+  { id: 'a2', type: 'audio', name: 'מוזיקה', duck: true, ...TRACK_FLAGS },
 ]
 
 export type ProjectFile = {

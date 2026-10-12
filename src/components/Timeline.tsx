@@ -7,6 +7,7 @@ import {
   createTextTrack,
   deleteTextTrack,
   endGesture,
+  liveTrackVolume,
   getPlayhead,
   importFiles,
   nudgeClip,
@@ -42,6 +43,11 @@ const LANES: { id: KeyLane; label: string }[] = [
 
 const RULER = 28
 const ROW = 56
+const AUDIO_ROW = 72
+
+function rowHeight(track: Track): number {
+  return track.type === 'audio' ? AUDIO_ROW : ROW
+}
 
 function assetIdFromDrop(data: DataTransfer): string | null {
   const custom = data.getData('application/x-retzef-asset')
@@ -185,25 +191,41 @@ export function Timeline() {
         <div className="w-40 shrink-0 border-e bg-card/50">
           <div style={{ height: RULER }} />
           {project.tracks.map((track) => (
-            <div key={track.id} style={{ height: ROW }} className="flex items-center gap-0.5 border-b px-1 text-[11px] text-muted-foreground">
-              <span className={cn('size-1.5 shrink-0 rounded-full', swatch(track))} />
-              <span className="min-w-0 flex-1 truncate">{track.name}</span>
-              <TrackToggle label={track.locked ? 'פתיחת מסלול' : 'נעילת מסלול'} pressed={track.locked} onClick={() => toggleTrackFlag(track.id, 'locked', !track.locked)}>
-                {track.locked ? <Lock className="size-3" /> : <Unlock className="size-3" />}
-              </TrackToggle>
-              <TrackToggle label={track.muted ? 'ביטול השתקה' : 'השתקת מסלול'} pressed={track.muted} onClick={() => toggleTrackFlag(track.id, 'muted', !track.muted)}>
-                <VolumeX className="size-3" />
-              </TrackToggle>
-              <TrackToggle label={track.solo ? 'ביטול סולו' : 'סולו'} pressed={track.solo} onClick={() => toggleTrackFlag(track.id, 'solo', !track.solo)}>
-                <Headphones className="size-3" />
-              </TrackToggle>
-              <TrackToggle label={track.hidden ? 'הצגת מסלול' : 'הסתרת מסלול'} pressed={track.hidden} onClick={() => toggleTrackFlag(track.id, 'hidden', !track.hidden)}>
-                {track.hidden ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
-              </TrackToggle>
-              {track.type === 'text' && project.tracks.filter((item) => item.type === 'text').length > 1 && (
-                <button type="button" className="text-xs" aria-label={`הסרת ${track.name}`} onClick={() => deleteTextTrack(track.id)}>
-                  ×
-                </button>
+            <div key={track.id} style={{ height: rowHeight(track) }} className="flex flex-col justify-center gap-0.5 border-b px-1 text-[11px] text-muted-foreground">
+              <div className="flex items-center gap-0.5">
+                <span className={cn('size-1.5 shrink-0 rounded-full', swatch(track))} />
+                <span className="min-w-0 flex-1 truncate">{track.name}</span>
+                <TrackToggle label={track.locked ? 'פתיחת מסלול' : 'נעילת מסלול'} pressed={track.locked} onClick={() => toggleTrackFlag(track.id, 'locked', !track.locked)}>
+                  {track.locked ? <Lock className="size-3" /> : <Unlock className="size-3" />}
+                </TrackToggle>
+                <TrackToggle label={track.muted ? 'ביטול השתקה' : 'השתקת מסלול'} pressed={track.muted} onClick={() => toggleTrackFlag(track.id, 'muted', !track.muted)}>
+                  <VolumeX className="size-3" />
+                </TrackToggle>
+                <TrackToggle label={track.solo ? 'ביטול סולו' : 'סולו'} pressed={track.solo} onClick={() => toggleTrackFlag(track.id, 'solo', !track.solo)}>
+                  <Headphones className="size-3" />
+                </TrackToggle>
+                <TrackToggle label={track.hidden ? 'הצגת מסלול' : 'הסתרת מסלול'} pressed={track.hidden} onClick={() => toggleTrackFlag(track.id, 'hidden', !track.hidden)}>
+                  {track.hidden ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+                </TrackToggle>
+                {track.type === 'text' && project.tracks.filter((item) => item.type === 'text').length > 1 && (
+                  <button type="button" className="text-xs" aria-label={`הסרת ${track.name}`} onClick={() => deleteTextTrack(track.id)}>
+                    ×
+                  </button>
+                )}
+              </div>
+              {track.type === 'audio' && (
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  aria-label={`עוצמת ${track.name}`}
+                  value={Math.round((track.volume ?? 1) * 100)}
+                  onChange={(event) => liveTrackVolume(track.id, Number(event.target.value) / 100)}
+                  onPointerUp={() => endGesture()}
+                  onKeyUp={() => endGesture()}
+                  onBlur={() => endGesture()}
+                  className="h-3 w-full accent-[#0078d4]"
+                />
               )}
             </div>
           ))}
@@ -245,7 +267,7 @@ export function Timeline() {
                 key={track.id}
                 data-track-id={track.id}
                 data-drop-zone
-                style={{ height: ROW }}
+                style={{ height: rowHeight(track) }}
                 className={cn('relative border-b', hotTrack === track.id && 'bg-primary/10')}
                 onDragOver={(event) => {
                   event.preventDefault()
