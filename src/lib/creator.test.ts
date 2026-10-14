@@ -65,10 +65,10 @@ describe('youtube creator tools', () => {
     expect(loopBounds({ ...marked, loopRegion: true })).toEqual({ start: 4, end: 9 })
   })
 
-  it('clears an out point that lands on or before the in point', () => {
+  it('swaps the range when the new mark would invert it', () => {
     const marked = setMark(setMark(project([freshClip({ id: 'a', duration: 12 })]), 'in', 2), 'out', 6)
-    expect(setMark(marked, 'in', 6).markOut).toBeNull()
-    expect(setMark(marked, 'out', 2).markOut).toBeNull()
+    expect(setMark(marked, 'in', 8)).toMatchObject({ markIn: 6, markOut: 8 })
+    expect(setMark(marked, 'out', 1)).toMatchObject({ markIn: 1, markOut: 2 })
   })
 
   it('measures the progress bar inside the export range', () => {

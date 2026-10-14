@@ -76,12 +76,13 @@ export function loopBounds(project: Project): { start: number; end: number } | n
 export function setMark(project: Project, edge: 'in' | 'out', time: number): Project {
   const limit = Math.max(0, projectDuration(project))
   const mark = Math.min(limit, Math.max(0, time))
-  if (edge === 'in') {
-    const markOut = project.markOut != null && project.markOut <= mark + 0.05 ? null : project.markOut
-    return { ...project, markIn: mark, markOut }
+  const other = edge === 'in' ? project.markOut : project.markIn
+  if (other == null || Math.abs(mark - other) <= 0.05) {
+    return edge === 'in' ? { ...project, markIn: mark } : { ...project, markOut: mark }
   }
-  if (project.markIn != null && mark <= project.markIn + 0.05) return { ...project, markOut: null }
-  return { ...project, markOut: mark }
+  const markIn = Math.min(mark, other)
+  const markOut = Math.max(mark, other)
+  return { ...project, markIn, markOut }
 }
 
 export function clearMarks(project: Project): Project {

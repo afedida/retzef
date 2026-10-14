@@ -620,8 +620,8 @@ function NumberField({ label, value, onCommit }: { label: string; value: number;
         inputMode="decimal"
         value={text}
         onChange={(event) => setText(event.target.value)}
-        onBlur={() => {
-          const next = Number(text)
+        onBlur={(event) => {
+          const next = Number(event.currentTarget.value)
           if (Number.isFinite(next)) onCommit(next)
           else setText(value.toFixed(2))
         }}
