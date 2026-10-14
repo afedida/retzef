@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dialog'
 import { exportProject } from '@/lib/exportVideo'
 import { pickMp4Stream } from '@/lib/saveFile'
+import { exportWindow } from '@/lib/creator'
 import { projectDuration } from '@/lib/edit'
 import { formatClock } from '@/lib/time'
 import { setExportOpen, setExportPreset } from '@/state/editor'
@@ -35,7 +36,9 @@ export function ExportDialog() {
   const [resultSize, setResultSize] = useState(0)
   const [savedToDisk, setSavedToDisk] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
-  const duration = projectDuration(project)
+  const timeline = projectDuration(project)
+  const range = exportWindow(project)
+  const duration = range.duration
   const estimate = duration * ((preset.videoBitrate + 192_000) / 8)
 
   const close = () => {
@@ -132,8 +135,8 @@ export function ExportDialog() {
           </label>
           <dl className="grid grid-cols-2 gap-2 text-xs">
             <div className="rounded-md bg-muted/60 px-2 py-1.5">
-              <dt className="text-muted-foreground">אורך</dt>
-              <dd dir="ltr" className="font-mono">{formatClock(duration)}</dd>
+              <dt className="text-muted-foreground">{range.ranged ? 'טווח ייצוא' : 'אורך'}</dt>
+              <dd dir="ltr" className="font-mono">{formatClock(duration)}{range.ranged ? ` / ${formatClock(timeline)}` : ''}</dd>
             </div>
             <div className="rounded-md bg-muted/60 px-2 py-1.5">
               <dt className="text-muted-foreground">גודל משוער</dt>

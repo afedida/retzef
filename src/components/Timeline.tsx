@@ -240,6 +240,12 @@ export function Timeline() {
               {project.beats.map((beat) => (
                 <span key={beat} className="pointer-events-none absolute bottom-0 z-10 h-2 w-px bg-[#0078d4]" style={{ left: beat * pps }} />
               ))}
+              {project.markIn != null && (
+                <span className="pointer-events-none absolute inset-y-0 z-30 w-0.5 bg-[#50e6ff]" style={{ left: project.markIn * pps }} title="כניסה" />
+              )}
+              {project.markOut != null && (
+                <span className="pointer-events-none absolute inset-y-0 z-30 w-0.5 bg-[#ffb900]" style={{ left: project.markOut * pps }} title="יציאה" />
+              )}
               {project.markers.map((marker) => (
                 <button
                   key={marker.id}
@@ -268,7 +274,7 @@ export function Timeline() {
                 data-track-id={track.id}
                 data-drop-zone
                 style={{ height: rowHeight(track) }}
-                className={cn('relative border-b', hotTrack === track.id && 'bg-primary/10')}
+                className={cn('relative z-0 border-b', hotTrack === track.id && 'bg-primary/10')}
                 onDragOver={(event) => {
                   event.preventDefault()
                   setHotTrack(track.id)
@@ -315,6 +321,12 @@ export function Timeline() {
                   ))}
               </div>
             ))}
+            {project.markIn != null && project.markOut != null && project.markOut > project.markIn && (
+              <div
+                className="pointer-events-none absolute inset-y-0 z-10 border-x-2 border-[#50e6ff] bg-[#0078d4]/35"
+                style={{ left: project.markIn * pps, width: Math.max(4, (project.markOut - project.markIn) * pps) }}
+              />
+            )}
             <div ref={playheadRef} className="pointer-events-none absolute inset-y-0 z-30 w-px bg-[#50e6ff] will-change-transform">
               <div
                 className="pointer-events-auto absolute top-0 h-3 w-3 -translate-x-1/2 cursor-ew-resize"

@@ -16,7 +16,8 @@ import {
   type WrappedCanvas,
 } from 'mediabunny'
 import { getBlob } from '@/lib/blobs'
-import { mixProjectAudio } from '@/lib/audio'
+import { mixProjectAudio, sliceAudioBuffer } from '@/lib/audio'
+import { exportWindow } from '@/lib/creator'
 import { flattenCompounds, projectDuration, sourceTimeAt, videoLayers } from '@/lib/edit'
 import { paintFrame, type Visual } from '@/lib/paint'
 import {
@@ -107,8 +108,9 @@ export async function exportProject(
   const preset = presetById(options?.preset ?? '1080p30')
   const timeline = flattenCompounds(project)
   const duration = projectDuration(timeline)
-  if (duration <= 0) throw new Error('אין קליפים על ציר הזמן')
-  if (duration > 10 * 60) throw new Error('הייצוא בגרסה הזו מוגבל לעשר דקות')
+  const range = exportWindow(timeline)
+  if (duration <= 0 || range.duration <= 0) throw new Error('אין קליפים על ציר הזמן')
+  if (range.duration > 10 * 60) throw new Error('הייצוא בגרסה הזו מוגבל לעשר דקות')
   if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
 
   const highProfile = await canEncodeVideo('avc', {
@@ -142,10 +144,11 @@ export async function exportProject(
     registerAacEncoder()
   }
 
-  onProgress({ ratio: 0.02, label: 'מכין את פס הקול' })
-  const totalFrames = Math.max(1, Math.ceil(duration * preset.fps - 1e-6))
+  onProgress({ ratio: 0.02, label: range.ranged ? 'מכין את פס הקול של הטווח' : 'מכין את פס הקול' })
+  const totalFrames = Math.max(1, Math.ceil(range.duration * preset.fps - 1e-6))
   const timelineDuration = totalFrames / preset.fps
-  const audioBuffer = await mixProjectAudio(timeline, assets, timelineDuration)
+  const mixed = await mixProjectAudio(timeline, assets, range.start + timelineDuration)
+  const audioBuffer = sliceAudioBuffer(mixed, range.start, timelineDuration)
   if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
 
   await Promise.all([
@@ -262,7 +265,7 @@ export async function exportProject(
 
     for (let frame = 0; frame < totalFrames; frame++) {
       if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
-      const time = frame / preset.fps
+      const time = range.start + frame / preset.fps
       const layers = videoLayers(timeline, time)
       for (const cursor of opened) {
         const layer = layers.find((item) => item.clip.id === cursor.clip.id)
@@ -299,7 +302,7 @@ export async function exportProject(
         },
         null,
       )
-      await videoSource.add(time, 1 / preset.fps)
+      await videoSource.add(frame / preset.fps, 1 / preset.fps)
       if (frame % 4 === 0 || frame === totalFrames - 1) {
         onProgress({
           ratio: 0.15 + 0.8 * ((frame + 1) / totalFrames),

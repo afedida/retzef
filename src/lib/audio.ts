@@ -7,6 +7,7 @@ import {
 } from 'mediabunny'
 import { getBlob } from '@/lib/blobs'
 import { denoisePcm } from '@/lib/denoise'
+import { crossfadeEnvelope, noiseGate, shapeVoice, limitSamples } from '@/lib/creator'
 import { audioGain, clampSpeed, flattenCompounds, trackHeard } from '@/lib/edit'
 import { applyGain, gainForTarget, integratedLufs } from '@/lib/loudness'
 import { timeStretch } from '@/lib/stretch'
@@ -158,7 +159,8 @@ export function mixGain(project: Project, assets: Asset[], clip: Clip, local: nu
     duck = 1 - amount * level
   }
   const trackVolume = track?.type === 'audio' ? Math.min(1, Math.max(0, track.volume ?? 1)) : 1
-  return audioGain(clip, local) * (project.masterVolume ?? 1) * trackVolume * duck
+  const sameTrack = project.clips.filter((item) => item.trackId === clip.trackId && item.assetId)
+  return audioGain(clip, local) * (project.masterVolume ?? 1) * trackVolume * duck * crossfadeEnvelope(clip, sameTrack, local)
 }
 
 const playbackCache = new Map<string, Promise<AudioBuffer>>()
@@ -183,6 +185,8 @@ async function processSlice(clip: Clip, buffer: AudioBuffer, offsetSec: number, 
     if (preserve) samples = timeStretch(samples, rate, speed)
     else if (clip.reverse && Math.abs(speed - 1) > 0.001) samples = resampleSpeed(samples, speed)
     if (clip.denoise) samples = await denoisePcm(samples, rate)
+    if (clip.gate) samples = noiseGate(samples, rate)
+    if (clip.voice) samples = shapeVoice(samples, rate)
     if (clip.reverse) samples = reverseChannel(samples)
     processed.push(samples)
   }
@@ -191,6 +195,9 @@ async function processSlice(clip: Clip, buffer: AudioBuffer, offsetSec: number, 
     const loudness = integratedLufs(processed[0], processed[1] ?? null, rate)
     gain = gainForTarget(loudness)
     for (let channel = 0; channel < processed.length; channel++) processed[channel] = applyGain(processed[channel]!, gain)
+  }
+  if (clip.voice) {
+    for (let channel = 0; channel < processed.length; channel++) processed[channel] = limitSamples(processed[channel]!)
   }
   const outLength = processed[0]?.length ?? 1
   const output = new AudioBuffer({ length: Math.max(1, outLength), numberOfChannels: channels, sampleRate: rate })
@@ -205,9 +212,15 @@ export async function clipPlaybackBuffer(clip: Clip, buffer: AudioBuffer, offset
   span: number
 }> {
   const speed = clampSpeed(clip.speed)
-  const needs = clip.reverse || clip.denoise || clip.normalize || (clip.preservePitch !== false && Math.abs(speed - 1) > 0.001)
+  const needs =
+    clip.reverse ||
+    clip.denoise ||
+    clip.normalize ||
+    clip.voice ||
+    clip.gate ||
+    (clip.preservePitch !== false && Math.abs(speed - 1) > 0.001)
   if (!needs) return { buffer, offset: offsetSec, rate: speed, span: spanSec }
-  const key = `${clip.assetId}:${offsetSec.toFixed(3)}:${spanSec.toFixed(3)}:${speed}:${clip.preservePitch}:${clip.denoise}:${clip.normalize}:${clip.reverse}`
+  const key = `${clip.assetId}:${offsetSec.toFixed(3)}:${spanSec.toFixed(3)}:${speed}:${clip.preservePitch}:${clip.denoise}:${clip.normalize}:${clip.reverse}:${clip.voice}:${clip.gate}`
   let pending = playbackCache.get(key)
   if (!pending) {
     pending = processSlice(clip, buffer, offsetSec, spanSec)
@@ -240,9 +253,12 @@ export async function mixProjectAudio(project: Project, assets: Asset[], duratio
     source.buffer = playback.buffer
     source.playbackRate.value = playback.rate
     const gain = offline.createGain()
+    const panner = offline.createStereoPanner()
+    panner.pan.value = Math.min(1, Math.max(-1, clip.pan ?? 0))
     scheduleGain(gain.gain, project, assets, clip, 0)
     source.connect(gain)
-    gain.connect(master)
+    gain.connect(panner)
+    panner.connect(master)
     source.start(Math.max(0, clip.start), playback.offset, playback.span)
   }
   return offline.startRendering()
@@ -254,7 +270,8 @@ function sampleTimes(project: Project, clip: Clip): number[] {
   if (clip.fadeOut > 0) points.add(Math.max(0, clip.duration - clip.fadeOut))
   for (const key of clip.volumeKeys) points.add(Math.min(clip.duration, Math.max(0, key.time * clip.duration)))
   const duck = project.tracks.some((track) => track.id === clip.trackId && track.duck)
-  if (duck || clip.volumeKeys.length > 1) {
+  const cross = project.clips.some((item) => item.trackId === clip.trackId && (item.audioCrossfade ?? 0) > 0)
+  if (duck || cross || clip.volumeKeys.length > 1) {
     for (let local = 0.05; local < clip.duration; local += 0.05) points.add(local)
   }
   return [...points].sort((a, b) => a - b)
@@ -279,18 +296,32 @@ export function schedulePreviewGain(
   clip: Clip,
   playhead: number,
   now: number,
+  rate = 1,
 ): void {
+  const playback = Math.max(0.25, rate)
   const localNow = playhead - clip.start
   const current = localNow >= 0 && localNow < clip.duration ? mixGain(project, assets, clip, localNow) : 0
   param.setValueAtTime(current, now)
   const step = 0.05
   let previous = now
   for (let local = Math.max(0, localNow) + step; local < clip.duration; local += step) {
-    const when = now + (clip.start + local - playhead)
+    const when = now + (clip.start + local - playhead) / playback
     if (when <= previous) continue
     param.linearRampToValueAtTime(mixGain(project, assets, clip, local), when)
     previous = when
   }
+}
+
+export function sliceAudioBuffer(buffer: AudioBuffer, start: number, duration: number): AudioBuffer {
+  const rate = buffer.sampleRate
+  const offset = Math.max(0, Math.min(buffer.length - 1, Math.round(start * rate)))
+  const length = Math.max(1, Math.round(duration * rate))
+  const output = new AudioBuffer({ length, numberOfChannels: buffer.numberOfChannels, sampleRate: rate })
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+    const source = buffer.getChannelData(channel).subarray(offset, Math.min(buffer.length, offset + length))
+    output.getChannelData(channel).set(source)
+  }
+  return output
 }
 
 export async function peakEnvelope(assetId: string, bars = 160): Promise<number[]> {

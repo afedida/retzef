@@ -10,7 +10,8 @@ import { TopBar } from '@/components/TopBar'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { presetById } from '@/types'
-import { copySelection, deleteSelectedMarker, downloadProjectFile, getState, groupSelection, importFiles, nudgeSelectedClip, pasteSelection, placeMarker, redo, removeSelectedClip, rippleSelectedClip, seek, setPps, splitAtPlayhead, togglePlay, undo, ungroupSelection } from '@/state/editor'
+import { CreatorBar } from '@/components/CreatorBar'
+import { clearExportMarks, copySelection, deleteSelectedMarker, downloadProjectFile, getState, groupSelection, importFiles, markInAtPlayhead, markOutAtPlayhead, nudgeSelectedClip, pasteSelection, placeMarker, redo, removeSelectedClip, rippleSelectedClip, seek, setPps, splitAtPlayhead, toggleLoop, togglePlay, undo, ungroupSelection } from '@/state/editor'
 import { useEditor } from '@/state/hooks'
 
 type PanelId = 'media' | 'inspect' | 'library' | 'transcript' | 'record' | 'history'
@@ -113,6 +114,14 @@ export function Editor() {
         nudgeSelectedClip(direction * (event.shiftKey ? 1 : 1 / presetById(getState().exportPreset).fps))
       } else if (event.code === 'KeyM') {
         placeMarker()
+      } else if (event.code === 'KeyI') {
+        markInAtPlayhead()
+      } else if (event.code === 'KeyO') {
+        markOutAtPlayhead()
+      } else if (event.code === 'KeyL') {
+        toggleLoop(!getState().project.loopRegion)
+      } else if (event.code === 'KeyX' && event.altKey) {
+        clearExportMarks()
       } else if (event.code === 'Home') {
         seek(0)
       } else if (event.code === 'Equal' || event.code === 'NumpadAdd') {
@@ -176,6 +185,7 @@ export function Editor() {
           </Tabs>
         </div>
       </div>
+      <CreatorBar />
       <Timeline />
       <ExportDialog />
     </div>
