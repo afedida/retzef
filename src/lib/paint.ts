@@ -1,8 +1,13 @@
+import { letterboxThickness, progressBarRect, progressFraction } from '@/lib/creator'
 import { fadeEnvelope, trackShown, videoLayers } from '@/lib/edit'
 import { gradeImage } from '@/lib/grade'
 import { sampleLane } from '@/lib/keyframes'
 import { containRect } from '@/lib/time'
 import { DEFAULT_FRAME, type BlendMode, type Clip, type Lut, type Project, type TextFont } from '@/types'
+
+export type PaintOptions = {
+  gradeBypass?: boolean
+}
 
 export type ReadyVisual = {
   status: 'ready'
@@ -98,7 +103,15 @@ function drawShape(ctx: CanvasRenderingContext2D, clip: Clip, width: number, hei
 
 type Box = { x: number; y: number; w: number; h: number }
 
-function drawVisual(ctx: CanvasRenderingContext2D, visual: Visual, clip: Clip, local: number, dest: Box, filterPrefix = '') {
+function drawVisual(
+  ctx: CanvasRenderingContext2D,
+  visual: Visual,
+  clip: Clip,
+  local: number,
+  dest: Box,
+  filterPrefix = '',
+  gradeBypass = false,
+) {
   if (visual.status === 'missing') {
     ctx.fillStyle = '#3a2226'
     ctx.fillRect(dest.x, dest.y, dest.w, dest.h)
@@ -116,12 +129,26 @@ function drawVisual(ctx: CanvasRenderingContext2D, visual: Visual, clip: Clip, l
   const scale = clip.keys?.scale?.length ? sampleLane(clip.keys.scale, progress, ken.scaleStart) : lerp(ken.scaleStart, ken.scaleEnd, progress)
   const px = clip.keys?.x?.length ? sampleLane(clip.keys.x, progress, ken.xStart) : lerp(ken.xStart, ken.xEnd, progress)
   const py = clip.keys?.y?.length ? sampleLane(clip.keys.y, progress, ken.yStart) : lerp(ken.yStart, ken.yEnd, progress)
-  ctx.filter = `${filterPrefix} ${colorFilter(clip)}`.trim()
-  const rect = containRect(visual.width, visual.height, dest.w, dest.h)
+  const rotation = clip.rotation ?? 0
+  const turned = rotation === 90 || rotation === 270
+  const srcW = turned ? visual.height : visual.width
+  const srcH = turned ? visual.width : visual.height
+  const rect = containRect(srcW, srcH, dest.w, dest.h)
   const w = rect.w * scale
   const h = rect.h * scale
-  ctx.drawImage(visual.source, dest.x + (dest.w - w) * px, dest.y + (dest.h - h) * py, w, h)
-  ctx.filter = 'none'
+  const x = (dest.w - w) * px
+  const y = (dest.h - h) * py
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(dest.x, dest.y, dest.w, dest.h)
+  ctx.clip()
+  ctx.translate(dest.x + dest.w / 2, dest.y + dest.h / 2)
+  if (clip.flipH) ctx.scale(-1, 1)
+  if (clip.flipV) ctx.scale(1, -1)
+  if (rotation) ctx.rotate((rotation * Math.PI) / 180)
+  ctx.filter = `${filterPrefix} ${colorFilter(clip, gradeBypass)}`.trim()
+  ctx.drawImage(visual.source, -dest.w / 2 + x, -dest.h / 2 + y, w, h)
+  ctx.restore()
 }
 
 function drawGraded(
@@ -133,11 +160,12 @@ function drawGraded(
   height: number,
   luts: Lut[],
   box: Box | null,
+  gradeBypass = false,
 ) {
-  const lut = clip.lutId ? (luts.find((item) => item.id === clip.lutId) ?? null) : null
+  const lut = gradeBypass || !clip.lutId ? null : (luts.find((item) => item.id === clip.lutId) ?? null)
   const dest = box ?? { x: 0, y: 0, w: width, h: height }
   if (!lut && !clip.chroma?.enabled) {
-    drawVisual(ctx, visual, clip, local, dest)
+    drawVisual(ctx, visual, clip, local, dest, '', gradeBypass)
     return
   }
   const grade = scratchCanvas(Math.max(1, Math.round(dest.w)), Math.max(1, Math.round(dest.h)))
@@ -147,7 +175,7 @@ function drawGraded(
   }
   grade.setTransform(1, 0, 0, 1, 0, 0)
   grade.clearRect(0, 0, scratch.width, scratch.height)
-  drawVisual(grade, visual, clip, local, { x: 0, y: 0, w: scratch.width, h: scratch.height })
+  drawVisual(grade, visual, clip, local, { x: 0, y: 0, w: scratch.width, h: scratch.height }, '', gradeBypass)
   const image = grade.getImageData(0, 0, scratch.width, scratch.height)
   gradeImage(image, clip.chroma?.enabled ? clip.chroma : null, lut)
   grade.putImageData(image, 0, 0)
@@ -292,7 +320,8 @@ function drawCaptionWords(
   ctx.globalAlpha = 1
 }
 
-function colorFilter(clip: Clip): string {
+function colorFilter(clip: Clip, gradeBypass = false): string {
+  if (gradeBypass) return 'brightness(1) contrast(1) saturate(1)'
   const color = clip.color
   return `brightness(${(1 + color.brightness).toFixed(3)}) contrast(${color.contrast.toFixed(3)}) saturate(${color.saturation.toFixed(3)})`
 }
@@ -309,14 +338,22 @@ function plateContext(width: number, height: number): CanvasRenderingContext2D |
   return context
 }
 
-function drawPortrait(ctx: CanvasRenderingContext2D, visual: Visual, clip: Clip, local: number, width: number, height: number) {
+function drawPortrait(
+  ctx: CanvasRenderingContext2D,
+  visual: Visual,
+  clip: Clip,
+  local: number,
+  width: number,
+  height: number,
+  gradeBypass = false,
+) {
   const dest = { x: 0, y: 0, w: width, h: height }
-  drawVisual(ctx, visual, clip, local, dest, 'blur(18px)')
+  drawVisual(ctx, visual, clip, local, dest, 'blur(18px)', gradeBypass)
   ctx.save()
   ctx.beginPath()
   ctx.ellipse(width * 0.5, height * 0.42, width * 0.22, height * 0.34, 0, 0, Math.PI * 2)
   ctx.clip()
-  drawVisual(ctx, visual, clip, local, dest)
+  drawVisual(ctx, visual, clip, local, dest, '', gradeBypass)
   ctx.restore()
 }
 
@@ -339,12 +376,20 @@ function applyMask(ctx: CanvasRenderingContext2D, clip: Clip, width: number, hei
   ctx.restore()
 }
 
-function applyAdjustment(ctx: CanvasRenderingContext2D, clip: Clip, width: number, height: number, opacity: number) {
+function applyAdjustment(
+  ctx: CanvasRenderingContext2D,
+  clip: Clip,
+  width: number,
+  height: number,
+  opacity: number,
+  gradeBypass = false,
+) {
+  if (gradeBypass) return
   const buffer = plateContext(width, height)
   if (!buffer || !plate) return
   buffer.drawImage(ctx.canvas, 0, 0)
   ctx.save()
-  ctx.filter = colorFilter(clip)
+  ctx.filter = colorFilter(clip, gradeBypass)
   ctx.globalAlpha = opacity
   ctx.drawImage(plate, 0, 0)
   ctx.restore()
@@ -356,7 +401,9 @@ export function paintFrame(
   time: number,
   getVisual: (clip: Clip) => Visual,
   selectedClipId: string | null,
+  options?: PaintOptions,
 ) {
+  const gradeBypass = options?.gradeBypass === true
   const width = ctx.canvas.width
   const height = ctx.canvas.height
   ctx.clearRect(0, 0, width, height)
@@ -366,7 +413,7 @@ export function paintFrame(
   for (const layer of videoLayers(project, time)) {
     if (layer.opacity <= 0) continue
     if (layer.clip.adjustment) {
-      applyAdjustment(ctx, layer.clip, width, height, layer.opacity)
+      applyAdjustment(ctx, layer.clip, width, height, layer.opacity, gradeBypass)
       continue
     }
     ctx.save()
@@ -387,14 +434,14 @@ export function paintFrame(
     if (masked) {
       const buffer = plateContext(width, height)
       if (buffer && plate) {
-        if (layer.clip.portrait) drawPortrait(buffer, getVisual(layer.clip), layer.clip, layer.local, width, height)
+        if (layer.clip.portrait) drawPortrait(buffer, getVisual(layer.clip), layer.clip, layer.local, width, height, gradeBypass)
         else if (layer.clip.shape && !layer.clip.assetId) drawShape(buffer, layer.clip, width, height)
-        else drawGraded(buffer, getVisual(layer.clip), layer.clip, layer.local, width, height, project.luts, null)
+        else drawGraded(buffer, getVisual(layer.clip), layer.clip, layer.local, width, height, project.luts, null, gradeBypass)
         applyMask(buffer, layer.clip, width, height)
         ctx.drawImage(plate, 0, 0)
       }
     } else if (layer.clip.shape && !layer.clip.assetId) drawShape(ctx, layer.clip, width, height)
-    else drawGraded(ctx, getVisual(layer.clip), layer.clip, layer.local, width, height, project.luts, boxed ? { x: boxX, y: boxY, w: boxW, h: boxH } : null)
+    else drawGraded(ctx, getVisual(layer.clip), layer.clip, layer.local, width, height, project.luts, boxed ? { x: boxX, y: boxY, w: boxW, h: boxH } : null, gradeBypass)
     if (layer.clip.borderWidth > 0) {
       ctx.strokeStyle = layer.clip.borderColor || '#ffffff'
       ctx.lineWidth = (layer.clip.borderWidth * height) / 1080
@@ -412,5 +459,19 @@ export function paintFrame(
       if (clip.trackId !== track.id || !clip.text) continue
       drawText(ctx, clip, width, height, clip.id === selectedClipId, time)
     }
+  }
+
+  const bars = letterboxThickness(project.letterbox ?? 0, height)
+  if (bars > 0) {
+    ctx.fillStyle = '#000'
+    ctx.fillRect(0, 0, width, bars)
+    ctx.fillRect(0, height - bars, width, bars)
+  }
+  if (project.progressBar) {
+    const rect = progressBarRect(progressFraction(project, time), width, height)
+    ctx.fillStyle = 'rgba(255,255,255,0.28)'
+    ctx.fillRect(0, rect.y, width, rect.h)
+    ctx.fillStyle = '#0078d4'
+    ctx.fillRect(0, rect.y, rect.w, rect.h)
   }
 }

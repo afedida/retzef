@@ -56,11 +56,28 @@ import { evenWords } from '@/lib/fillers'
 import { LOOKS } from '@/lib/looks'
 import { parseCube } from '@/lib/lut'
 import { cuesToSrt, parseSrt } from '@/lib/srt'
+import {
+  addEndScreen,
+  applyAttributes,
+  applyJumpZoom,
+  applySplit,
+  clearMarks,
+  detachAudio,
+  fitMusic,
+  jCut,
+  lCut,
+  loopBounds,
+  nextRotation,
+  pickAttributes,
+  placeCaption,
+  setMark,
+  type ClipAttributes,
+} from '@/lib/creator'
 import { addIntro, addLowerThird, addOutro, addSticker, addWatermark } from '@/lib/templates'
 import { silentGaps } from '@/lib/vad'
 import { captureImageThumbnail, captureVideoThumbnail, probeFile, readProjectFile } from '@/lib/media'
 import { packProject, unpackProject } from '@/lib/package'
-import { presetById, type Asset, type CaptionLanguage, type Clip, type Ease, type ExportPresetId, type KenBurns, type ColorGrade, type KeyLane, type Project, type ShapeKind, type TextStyle, type Transition } from '@/types'
+import { presetById, REVIEW_RATES, type Asset, type CaptionAnchor, type CaptionLanguage, type Clip, type Ease, type ExportPresetId, type KenBurns, type ColorGrade, type KeyLane, type Project, type ReviewRate, type ShapeKind, type TextStyle, type Transition } from '@/types'
 
 export type EditorState = {
   ready: boolean
@@ -82,6 +99,10 @@ export type EditorState = {
   canRedo: boolean
   trackArmed: boolean
   versions: ProjectVersion[]
+  reviewRate: ReviewRate
+  showGuides: boolean
+  gradeBypass: boolean
+  attributeClip: ClipAttributes | null
 }
 
 const history = {
@@ -115,6 +136,10 @@ const state: EditorState = {
   canRedo: false,
   trackArmed: false,
   versions: [],
+  reviewRate: 1,
+  showGuides: false,
+  gradeBypass: false,
+  attributeClip: null,
 }
 
 const listeners = new Set<() => void>()
@@ -696,6 +721,176 @@ export function setTrackArmed(armed: boolean) {
   emit()
 }
 
+function note(message: string) {
+  state.status = message
+  emit()
+}
+
+export function markInAtPlayhead() {
+  commit((project) => setMark(project, 'in', playhead))
+  note('נקודת כניסה')
+}
+
+export function markOutAtPlayhead() {
+  commit((project) => setMark(project, 'out', playhead))
+  note('נקודת יציאה')
+}
+
+export function clearExportMarks() {
+  commit((project) => clearMarks(project))
+  note('הטווח נוקה')
+}
+
+export function toggleLoop(loop: boolean) {
+  commit((project) => ({ ...project, loopRegion: loop }))
+}
+
+export function setReviewRate(rate: ReviewRate) {
+  if (!REVIEW_RATES.includes(rate)) return
+  state.reviewRate = rate
+  emit()
+  if (playing) {
+    runClock()
+    emitTransport('seek')
+  }
+}
+
+export function toggleGuides(show: boolean) {
+  state.showGuides = show
+  emit()
+}
+
+export function toggleGradeBypass(bypass: boolean) {
+  state.gradeBypass = bypass
+  emit()
+}
+
+export function toggleProgressBar(enabled: boolean) {
+  commit((project) => ({ ...project, progressBar: enabled }))
+}
+
+export function toggleLetterbox(enabled: boolean) {
+  commit((project) => ({ ...project, letterbox: enabled ? 0.12 : 0 }))
+}
+
+export function insertEndScreen() {
+  commit((project) => addEndScreen(project))
+  note('נוסף מסך סיום של 12 שניות')
+}
+
+export function jumpZoomTrack() {
+  const before = state.project.clips.filter((clip) => clip.trackId === 'v1' && clip.assetId && !clip.text).length
+  if (!before) {
+    note('אין קליפים במסלול וידאו 1')
+    return
+  }
+  commit((project) => applyJumpZoom(project, 'v1'))
+  note('זום מתחלף על הג׳אמפ קאטים')
+}
+
+export function fitMusicBed() {
+  const bed = state.project.clips.find((clip) => clip.trackId === 'a2')
+  if (!bed) {
+    note('אין קליפ במסלול המוזיקה')
+    return
+  }
+  commit((project) => fitMusic(project, assetOf(bed.assetId)))
+  note('המוזיקה הותאמה לאורך הווידאו')
+}
+
+export function splitSelection(orientation: 'horizontal' | 'vertical') {
+  const ids = selectedIds()
+  if (ids.length < 2) {
+    note('בחרו שני קליפים לפיצול מסך')
+    return
+  }
+  commit((project) => applySplit(project, ids, orientation))
+  note(orientation === 'vertical' ? 'מסך מפוצל למעלה ולמטה' : 'מסך מפוצל לשניים')
+}
+
+export function detachSelectedAudio() {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
+  if (!clip) {
+    note('בחרו קליפ וידאו עם שמע')
+    return
+  }
+  const asset = assetOf(clip.assetId)
+  const next = detachAudio(state.project, clip.id, asset)
+  if (next === state.project) {
+    note('אפשר להפריד רק שמע מתוך קליפ וידאו')
+    return
+  }
+  commit(() => next)
+  note('השמע הופרד למסלול הקריינות')
+}
+
+export function jCutSelected() {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
+  if (!clip) return
+  const next = jCut(state.project, clip.id, assetOf(clip.assetId))
+  if (next === state.project) {
+    note('ג׳י-קאט צריך שמע ומקור לפני נקודת הכניסה')
+    return
+  }
+  commit(() => next)
+  note('ג׳י-קאט: השמע מקדים את התמונה')
+}
+
+export function lCutSelected() {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
+  if (!clip) return
+  const next = lCut(state.project, clip.id, assetOf(clip.assetId))
+  if (next === state.project) {
+    note('אל-קאט צריך שמע שנשאר אחרי סוף הקליפ')
+    return
+  }
+  commit(() => next)
+  note('אל-קאט: הקול ממשיך אחרי החיתוך')
+}
+
+export function copyAttributes() {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
+  if (!clip) {
+    note('בחרו קליפ להעתקת מאפיינים')
+    return
+  }
+  state.attributeClip = pickAttributes(clip)
+  note('המאפיינים הועתקו')
+  emit()
+}
+
+export function pasteAttributes() {
+  const attributes = state.attributeClip
+  const ids = selectedIds()
+  if (!attributes || !ids.length) {
+    note('העתיקו מאפיינים ואז בחרו קליפים')
+    return
+  }
+  commit((project) => applyAttributes(project, ids, attributes))
+  note('המאפיינים הודבקו')
+}
+
+export function anchorCaption(anchor: CaptionAnchor) {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
+  if (!clip?.text) {
+    note('בחרו כתוביות')
+    return
+  }
+  commit((project) => placeCaption(project, clip.id, anchor))
+}
+
+export function rotateSelected() {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
+  if (!clip || clip.text) return
+  commit((project) => updateClip(project, clip.id, { rotation: nextRotation(clip.rotation ?? 0) }))
+}
+
+export function toggleFlip(axis: 'h' | 'v') {
+  const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
+  if (!clip || clip.text) return
+  commit((project) => updateClip(project, clip.id, axis === 'h' ? { flipH: !clip.flipH } : { flipV: !clip.flipV }))
+}
+
 export function applyLook(id: string) {
   const look = LOOKS.find((item) => item.id === id)
   const ids = selectedIds()
@@ -1264,7 +1459,18 @@ function runClock() {
   const tick = (now: number) => {
     if (!playing) return
     const limit = projectDuration(state.project)
-    const next = clockPlayhead + (now - clockPerf) / 1000
+    const rate = state.reviewRate || 1
+    const next = clockPlayhead + ((now - clockPerf) / 1000) * rate
+    const loop = loopBounds(state.project)
+    if (loop && next >= loop.end - 1e-4) {
+      playhead = loop.start
+      clockPlayhead = loop.start
+      clockPerf = now
+      emitFrame()
+      emitTransport('seek')
+      raf = requestAnimationFrame(tick)
+      return
+    }
     if (limit > 0 && next >= limit - 1e-4) {
       playhead = limit
       playing = false
@@ -1299,7 +1505,10 @@ export function pause() {
 export function play() {
   const duration = projectDuration(state.project)
   if (duration <= 0) return
-  if (playhead >= duration - frameDuration()) playhead = 0
+  const loop = loopBounds(state.project)
+  if (loop) {
+    if (playhead < loop.start || playhead >= loop.end - frameDuration()) playhead = loop.start
+  } else if (playhead >= duration - frameDuration()) playhead = 0
   if (playing) return
   playing = true
   emitPlaying()

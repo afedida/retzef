@@ -60,6 +60,11 @@ export function blankProject(): Project {
     duckAttack: 0.08,
     duckRelease: 0.28,
     beats: [],
+    markIn: null,
+    markOut: null,
+    loopRegion: false,
+    progressBar: false,
+    letterbox: 0,
   }
 }
 
@@ -126,6 +131,13 @@ function mediaDefaults(): Pick<
   | 'captionStyle'
   | 'words'
   | 'children'
+  | 'pan'
+  | 'audioCrossfade'
+  | 'voice'
+  | 'gate'
+  | 'flipH'
+  | 'flipV'
+  | 'rotation'
 > {
   return {
     speed: 1,
@@ -154,6 +166,13 @@ function mediaDefaults(): Pick<
     captionStyle: 'plain',
     words: [],
     children: null,
+    pan: 0,
+    audioCrossfade: 0,
+    voice: false,
+    gate: false,
+    flipH: false,
+    flipV: false,
+    rotation: 0,
   }
 }
 
@@ -967,6 +986,13 @@ function coerceClip(value: unknown, tracks: Track[]): Clip | null {
     captionStyle: raw.captionStyle === 'karaoke' || raw.captionStyle === 'pop' ? raw.captionStyle : 'plain',
     words: coerceWords(raw.words),
     children,
+    pan: Math.min(1, Math.max(-1, finite(raw.pan, 0))),
+    audioCrossfade: Math.min(2, Math.max(0, finite(raw.audioCrossfade, 0))),
+    voice: raw.voice === true,
+    gate: raw.gate === true,
+    flipH: raw.flipH === true,
+    flipV: raw.flipV === true,
+    rotation: raw.rotation === 90 || raw.rotation === 180 || raw.rotation === 270 ? raw.rotation : 0,
   }
 }
 
@@ -1039,7 +1065,17 @@ export function coerceProject(value: unknown): Project | null {
     duckAttack: Math.min(2, Math.max(0, finite(raw.duckAttack, 0.08))),
     duckRelease: Math.min(2, Math.max(0, finite(raw.duckRelease, 0.28))),
     beats: coerceBeats(raw.beats),
+    markIn: coerceMark(raw.markIn),
+    markOut: coerceMark(raw.markOut),
+    loopRegion: raw.loopRegion === true,
+    progressBar: raw.progressBar === true,
+    letterbox: Math.min(0.22, Math.max(0, finite(raw.letterbox, 0))),
   }
+}
+
+function coerceMark(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return Math.max(0, value)
 }
 
 function coerceBeats(value: unknown): number[] {

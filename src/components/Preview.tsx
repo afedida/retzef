@@ -3,6 +3,7 @@ import { ImageDown, Pause, Play, SkipBack } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { getUrl } from '@/lib/blobs'
 import { analyzeSpeech, audibleClips, clipPlaybackBuffer, loadAudioBuffer, schedulePreviewGain } from '@/lib/audio'
+import { youtubeSafeGuides } from '@/lib/creator'
 import { clampSpeed, flattenCompounds, projectDuration, sourceTimeAt, updateText, videoLayers } from '@/lib/edit'
 import { matchPatch } from '@/lib/track'
 import { paintFrame, type Visual } from '@/lib/paint'
@@ -20,12 +21,13 @@ import {
   registerPreviewGrab,
   seek,
   selectClip,
+  setReviewRate,
   setStatus,
   subscribeFrames,
   togglePlay,
 } from '@/state/editor'
 import { useEditor, usePlaying } from '@/state/hooks'
-import { presetById, type Asset, type Clip, type Project } from '@/types'
+import { presetById, REVIEW_RATES, type Asset, type Clip, type Project, type ReviewRate } from '@/types'
 
 class PreviewMixer {
   private ctx: AudioContext | null = null
@@ -53,6 +55,7 @@ class PreviewMixer {
     if (ctx.state === 'suspended') await ctx.resume()
     if (token !== this.token) return
     const now = ctx.currentTime + 0.04
+    const review = getState().reviewRate || 1
     for (const clip of audibleClips(project, assets)) {
       if (!clip.assetId) continue
       const buffer = await loadAudioBuffer(clip.assetId)
@@ -68,12 +71,15 @@ class PreviewMixer {
       if (token !== this.token) return
       const source = ctx.createBufferSource()
       source.buffer = playback.buffer
-      source.playbackRate.value = playback.rate
+      source.playbackRate.value = playback.rate * review
       const gain = ctx.createGain()
-      schedulePreviewGain(gain.gain, project, assets, clip, time, now)
+      const panner = ctx.createStereoPanner()
+      panner.pan.value = Math.min(1, Math.max(-1, clip.pan ?? 0))
+      schedulePreviewGain(gain.gain, project, assets, clip, time, now, review)
       source.connect(gain)
-      gain.connect(ctx.destination)
-      const when = local < 0 ? now + (clip.start - time) : now
+      gain.connect(panner)
+      panner.connect(ctx.destination)
+      const when = local < 0 ? now + (clip.start - time) / review : now
       source.start(when, playback.offset, playback.span)
       this.nodes.push(source)
     }
@@ -86,6 +92,9 @@ export function Preview() {
   const selectedClipId = useEditor((state) => state.selectedClipId)
   const playing = usePlaying()
   const exportPreset = useEditor((state) => state.exportPreset)
+  const reviewRate = useEditor((state) => state.reviewRate)
+  const showGuides = useEditor((state) => state.showGuides)
+  const gradeBypass = useEditor((state) => state.gradeBypass)
   const frame = presetById(exportPreset)
   const aspect = frame.width / frame.height
   const stageRef = useRef<HTMLDivElement>(null)
@@ -105,7 +114,7 @@ export function Preview() {
     assetsRef.current = assets
     selectedRef.current = selectedClipId
     draw.current()
-  }, [project, assets, selectedClipId])
+  }, [project, assets, selectedClipId, gradeBypass])
 
   useEffect(() => {
     for (const clip of project.clips) {
@@ -198,7 +207,8 @@ export function Preview() {
         }
         const sourceTime = sourceTimeAt(clip, layer ? layer.sourceLocal : local)
         const reversed = clip.reverse
-        if (!reversed && video.playbackRate !== clampSpeed(clip.speed)) video.playbackRate = clampSpeed(clip.speed)
+        const pictureRate = clampSpeed(clip.speed) * (playingNow ? getState().reviewRate || 1 : 1)
+        if (!reversed && video.playbackRate !== pictureRate) video.playbackRate = pictureRate
         if (video.readyState >= 1 && Math.abs(video.currentTime - sourceTime) > (playingNow && !reversed ? 0.2 : 0.04)) {
           try {
             const maxTime = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.001) : sourceTime
@@ -238,7 +248,7 @@ export function Preview() {
         return { status: 'pending' }
       }
 
-      paintFrame(ctx, flat, time, visualFor, selectedRef.current)
+      paintFrame(ctx, flat, time, visualFor, selectedRef.current, { gradeBypass: getState().gradeBypass })
       if (timecodeRef.current) {
         const fps = presetById(getState().exportPreset).fps
         timecodeRef.current.textContent = `${formatTimecode(time, fps)} / ${formatTimecode(projectDuration(currentProject), fps)}`
@@ -383,6 +393,19 @@ export function Preview() {
             height: `min(100cqh, calc(100cqw / ${aspect}))`,
           }}
         >
+          {showGuides && (
+            <div className="pointer-events-none absolute inset-0">
+              {youtubeSafeGuides().map((guide) => (
+                <div
+                  key={guide.id}
+                  className="absolute border border-[#50e6ff]/80"
+                  style={{ left: `${guide.x * 100}%`, top: `${guide.y * 100}%`, width: `${guide.w * 100}%`, height: `${guide.h * 100}%` }}
+                >
+                  <span className="absolute start-1 top-0.5 text-[10px] text-white drop-shadow">{guide.label}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <canvas
             ref={canvasRef}
             className="h-full w-full"
@@ -441,6 +464,21 @@ export function Preview() {
         <span ref={timecodeRef} dir="ltr" className="font-mono text-xs text-muted-foreground tabular-nums">
           00:00.00 / 00:00.00
         </span>
+        <div className="flex items-center gap-1" aria-label="מהירות סקירה">
+          {REVIEW_RATES.map((rate) => (
+            <Button
+              key={rate}
+              type="button"
+              size="sm"
+              variant={reviewRate === rate ? 'secondary' : 'ghost'}
+              aria-pressed={reviewRate === rate}
+              onClick={() => setReviewRate(rate as ReviewRate)}
+            >
+              {rate}x
+            </Button>
+          ))}
+        </div>
+        {gradeBypass && <span className="text-[11px] text-[#50e6ff]">בלי צבע</span>}
         <Button type="button" size="sm" variant="ghost" onClick={downloadThumbnail}>
           <ImageDown />
           תמונה ממוזערת

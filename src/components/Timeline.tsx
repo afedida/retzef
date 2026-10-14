@@ -235,6 +235,12 @@ export function Timeline() {
         </div>
         <div ref={scrollerRef} dir="ltr" className="min-w-0 flex-1 overflow-auto">
           <div ref={contentRef} className="relative" style={{ width }}>
+            {project.markIn != null && project.markOut != null && project.markOut > project.markIn && (
+              <div
+                className="pointer-events-none absolute bottom-0 z-0 bg-[#0078d4]/15"
+                style={{ top: 0, left: project.markIn * pps, width: (project.markOut - project.markIn) * pps }}
+              />
+            )}
             <div className="sticky top-0 z-20 cursor-ew-resize border-b bg-[#252526]" style={{ height: RULER }} onPointerDown={onRulerDown}>
               <Ruler width={width} pps={pps} />
               {project.beats.map((beat) => (

@@ -20,6 +20,11 @@ export type KeyLane = 'volume' | 'opacity' | 'scale' | 'x' | 'y'
 export type CaptionLanguage = 'hebrew' | 'english'
 export type MaskKind = 'none' | 'ellipse' | 'vignette'
 export type CaptionStyle = 'plain' | 'karaoke' | 'pop'
+export type Rotation = 0 | 90 | 180 | 270
+export type ReviewRate = 1 | 1.25 | 1.5 | 2
+export type CaptionAnchor = 'bottom' | 'middle' | 'top'
+
+export const REVIEW_RATES: ReviewRate[] = [1, 1.25, 1.5, 2]
 
 export type ExportPresetId = '1080p30' | '1080p60' | '720p30' | 'shorts' | 'square' | 'feed'
 
@@ -178,6 +183,13 @@ export type Clip = {
   captionStyle: CaptionStyle
   words: CaptionWord[]
   children: Clip[] | null
+  pan: number
+  audioCrossfade: number
+  voice: boolean
+  gate: boolean
+  flipH: boolean
+  flipV: boolean
+  rotation: Rotation
 }
 
 export type Track = {
@@ -212,6 +224,11 @@ export type Project = {
   duckAttack: number
   duckRelease: number
   beats: number[]
+  markIn: number | null
+  markOut: number | null
+  loopRegion: boolean
+  progressBar: boolean
+  letterbox: number
 }
 
 export const DEFAULT_KEN: KenBurns = {

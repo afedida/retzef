@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ClipCreatorFields } from '@/components/CreatorBar'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -211,6 +212,8 @@ export function Inspector({ className }: { className?: string }) {
               suffix="s"
               onChange={(value) => liveFade(clip.id, 'fadeOut', value)}
             />
+            <Separator />
+            <ClipCreatorFields clip={clip} />
             <Tools clip={clip} />
             <Button type="button" variant="destructive" size="sm" onClick={removeSelectedClip}>
               מחיקת הקליפ
