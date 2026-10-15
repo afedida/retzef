@@ -3,7 +3,7 @@ import { detectBeats } from '@/lib/beats'
 import { transcribePcm } from '@/lib/captions'
 import { youtubeChapters } from '@/lib/chapters'
 import { dropBlob, getBlob, getUrl, putBlob } from '@/lib/blobs'
-import { deleteStoredAsset, loadStoredAssets, loadStoredProject, loadVersions, saveAsset, saveProject, saveVersions, type ProjectVersion } from '@/lib/db'
+import { deleteStoredAsset, loadKv, loadStoredAssets, loadStoredProject, loadVersions, saveAsset, saveKv, saveProject, saveVersions, type ProjectVersion } from '@/lib/db'
 import {
   addMarker,
   addTextTrack,
@@ -77,6 +77,35 @@ import { addIntro, addLowerThird, addOutro, addSticker, addWatermark } from '@/l
 import { silentGaps } from '@/lib/vad'
 import { captureImageThumbnail, captureVideoThumbnail, probeFile, readProjectFile } from '@/lib/media'
 import { packProject, unpackProject } from '@/lib/package'
+import { exportProject } from '@/lib/exportVideo'
+import { pickMp4Stream } from '@/lib/saveFile'
+import {
+  autosaveLinkedFolder,
+  chooseProjectFolder,
+  directoryPickerSupported,
+  linkedFolder,
+  listRecentFolders,
+  openProjectFolder,
+  reopenRecentFolder,
+} from '@/lib/folderStore'
+import {
+  DEFAULT_SHORTCUTS,
+  cloneBindings,
+  parseShortcutDocument,
+  readShortcutSettings,
+  shortcutDocument,
+  writeShortcutSettings,
+  type Bindings,
+} from '@/lib/shortcuts'
+import {
+  captureTemplate,
+  deleteTemplate,
+  parseTemplateDocument,
+  projectFromTemplate,
+  renameTemplate,
+  type TemplatePart,
+  type UserTemplate,
+} from '@/lib/userTemplates'
 import { presetById, REVIEW_RATES, type Asset, type CaptionAnchor, type CaptionLanguage, type Clip, type Ease, type ExportPresetId, type KenBurns, type ColorGrade, type KeyLane, type Project, type ReviewRate, type ShapeKind, type TextStyle, type Transition } from '@/types'
 
 export type EditorState = {
@@ -103,6 +132,26 @@ export type EditorState = {
   showGuides: boolean
   gradeBypass: boolean
   attributeClip: ClipAttributes | null
+  exportJob: ExportJob | null
+  folderOpen: boolean
+  templateOpen: boolean
+  shortcutOpen: boolean
+  shortcutCapture: boolean
+  folderName: string | null
+  recentFolders: { id: string; name: string; savedAt: number }[]
+  templates: UserTemplate[]
+  shortcuts: Bindings
+}
+
+export type ExportJob = {
+  running: boolean
+  ratio: number
+  label: string
+  speed: number
+  error: string | null
+  resultUrl: string | null
+  resultSize: number
+  savedToDisk: boolean
 }
 
 const history = {
@@ -140,6 +189,15 @@ const state: EditorState = {
   showGuides: false,
   gradeBypass: false,
   attributeClip: null,
+  exportJob: null,
+  folderOpen: false,
+  templateOpen: false,
+  shortcutOpen: false,
+  shortcutCapture: false,
+  folderName: null,
+  recentFolders: [],
+  templates: [],
+  shortcuts: cloneBindings(DEFAULT_SHORTCUTS),
 }
 
 const listeners = new Set<() => void>()
@@ -176,6 +234,12 @@ function scheduleSave() {
   window.clearTimeout(saveTimer)
   saveTimer = window.setTimeout(() => {
     void saveProject(state.project)
+    const blobs = new Map<string, Blob>()
+    for (const asset of state.assets) {
+      const blob = getBlob(asset.id)
+      if (blob) blobs.set(asset.id, blob)
+    }
+    void autosaveLinkedFolder(state.project, state.assets, blobs).catch(() => undefined)
   }, 350)
 }
 
@@ -319,7 +383,6 @@ export function setPps(pps: number) {
 
 export function setExportOpen(open: boolean) {
   state.exportOpen = open
-  if (open) pause()
   emit()
 }
 
@@ -1389,9 +1452,11 @@ async function boot() {
   } catch (error) {
     state.importError = error instanceof Error ? error.message : 'טעינת השמירה המקומית נכשלה'
   }
+  state.shortcuts = readShortcutSettings()
   state.ready = true
   touchHistory()
   emit()
+  void loadStudioSettings()
   void loadVersions()
     .then((versions) => {
       state.versions = versions
@@ -1401,6 +1466,308 @@ async function boot() {
   window.setInterval(() => {
     if (state.ready) void rememberVersion(false)
   }, 120_000)
+}
+
+async function loadStudioSettings(): Promise<void> {
+  try {
+    const [templates, recent] = await Promise.all([loadKv<unknown[]>('user-templates'), listRecentFolders()])
+    state.templates = Array.isArray(templates)
+      ? templates.flatMap((item) => {
+          const parsed = parseTemplateDocument(item)
+          return parsed ? [parsed] : []
+        })
+      : []
+    state.recentFolders = recent
+    state.folderName = linkedFolder()?.name ?? null
+    emit()
+  } catch {
+    /* settings stay empty */
+  }
+}
+
+function assetBlobs(): Map<string, Blob> {
+  const blobs = new Map<string, Blob>()
+  for (const asset of state.assets) {
+    const blob = getBlob(asset.id)
+    if (blob) blobs.set(asset.id, blob)
+  }
+  return blobs
+}
+
+function installLoaded(project: Project, assets: { asset: Asset; blob: Blob }[], status: string) {
+  history.past.push(state.project)
+  if (history.past.length > 80) history.past.shift()
+  history.future = []
+  for (const item of assets) {
+    putBlob(item.asset.id, item.blob)
+    void saveAsset(item.asset, item.blob)
+  }
+  const ids = new Set(assets.map((item) => item.asset.id))
+  state.assets = [...state.assets.filter((asset) => !ids.has(asset.id)), ...assets.map((item) => item.asset)]
+  state.project = project
+  state.selectedClipId = null
+  state.selectedClipIds = []
+  state.importError = null
+  state.status = status
+  touchHistory()
+  scheduleSave()
+  emit()
+}
+
+function noteFolderError(error: unknown, unsupported: string) {
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    state.status = 'בחירת התיקייה בוטלה'
+  } else if (!directoryPickerSupported()) {
+    state.status = unsupported
+  } else {
+    state.status = error instanceof Error ? error.message : 'הפעולה על התיקייה נכשלה'
+  }
+  emit()
+}
+
+export function setFolderOpen(open: boolean) {
+  state.folderOpen = open
+  if (open) void loadStudioSettings()
+  emit()
+}
+
+export function setTemplateOpen(open: boolean) {
+  state.templateOpen = open
+  emit()
+}
+
+export function setShortcutOpen(open: boolean) {
+  state.shortcutOpen = open
+  state.shortcutCapture = false
+  emit()
+}
+
+export function setShortcutCapture(active: boolean) {
+  state.shortcutCapture = active
+  emit()
+}
+
+export async function saveActiveProject(): Promise<void> {
+  if (!linkedFolder()) {
+    downloadProjectFile()
+    return
+  }
+  try {
+    await autosaveLinkedFolder(state.project, state.assets, assetBlobs())
+    state.status = 'הפרויקט נשמר בתיקייה'
+  } catch (error) {
+    noteFolderError(error, 'הדפדפן לא תומך בשמירה לתיקייה. השמירה האוטומטית נשארת בדפדפן, ואפשר להוריד JSON או zip.')
+  }
+  emit()
+}
+
+export async function saveProjectToFolder(): Promise<void> {
+  try {
+    const link = await chooseProjectFolder(state.project, state.assets, assetBlobs())
+    state.folderName = link.name
+    state.status = `הפרויקט נשמר בתיקייה`
+    state.recentFolders = await listRecentFolders()
+    emit()
+  } catch (error) {
+    noteFolderError(error, 'הדפדפן לא תומך בשמירה לתיקייה. השמירה האוטומטית נשארת בדפדפן, ואפשר להוריד JSON או zip.')
+  }
+}
+
+export async function openFolderProject(): Promise<void> {
+  try {
+    const loaded = await openProjectFolder()
+    state.folderName = loaded.link.name
+    installLoaded(loaded.project, loaded.assets, 'הפרויקט נפתח מהתיקייה')
+    state.recentFolders = await listRecentFolders()
+    emit()
+  } catch (error) {
+    noteFolderError(error, 'הדפדפן לא תומך בפתיחת תיקייה. אפשר לטעון JSON או zip.')
+  }
+}
+
+export async function openRecentFolder(id: string): Promise<void> {
+  try {
+    const loaded = await reopenRecentFolder(id)
+    state.folderName = loaded.link.name
+    installLoaded(loaded.project, loaded.assets, 'הפרויקט האחרון נפתח')
+    state.recentFolders = await listRecentFolders()
+    emit()
+  } catch (error) {
+    noteFolderError(error, 'הדפדפן לא תומך בפתיחת תיקייה. אפשר לטעון JSON או zip.')
+  }
+}
+
+async function persistTemplates(templates: UserTemplate[]) {
+  state.templates = templates
+  await saveKv('user-templates', templates)
+  emit()
+}
+
+export async function saveCurrentTemplate(name: string, parts: TemplatePart[]): Promise<void> {
+  if (!parts.length) {
+    state.status = 'בחרו לפחות חלק אחד לתבנית'
+    emit()
+    return
+  }
+  const template = captureTemplate({ name, project: state.project, preset: state.exportPreset, parts })
+  await persistTemplates([template, ...state.templates].slice(0, 40))
+  state.status = `התבנית «${template.name}» נשמרה`
+  emit()
+}
+
+export async function renameStoredTemplate(id: string, name: string): Promise<void> {
+  await persistTemplates(renameTemplate(state.templates, id, name))
+}
+
+export async function deleteStoredTemplate(id: string): Promise<void> {
+  await persistTemplates(deleteTemplate(state.templates, id))
+  state.status = 'התבנית נמחקה'
+  emit()
+}
+
+export function applyStoredTemplate(id: string) {
+  const template = state.templates.find((item) => item.id === id)
+  if (!template) return
+  const created = projectFromTemplate(template)
+  history.past.push(state.project)
+  if (history.past.length > 80) history.past.shift()
+  history.future = []
+  state.project = created.project
+  state.selectedClipId = null
+  state.selectedClipIds = []
+  if (created.preset) state.exportPreset = created.preset
+  state.status = 'נפתח פרויקט חדש מהתבנית. מדיה שלא נמצאת בספרייה תופיע כחסרה.'
+  touchHistory()
+  scheduleSave()
+  emit()
+}
+
+export function importTemplateText(text: string) {
+  const template = parseTemplateDocument(JSON.parse(text) as unknown)
+  if (!template) throw new Error('קובץ התבנית לא תקין')
+  template.id = crypto.randomUUID()
+  void persistTemplates([template, ...state.templates].slice(0, 40))
+  state.status = `התבנית «${template.name}» יובאה`
+  emit()
+}
+
+export function applyShortcutBindings(bindings: Bindings) {
+  state.shortcuts = cloneBindings(bindings)
+  writeShortcutSettings(state.shortcuts)
+  state.shortcutCapture = false
+  emit()
+}
+
+export function resetShortcutBindings() {
+  applyShortcutBindings(cloneBindings(DEFAULT_SHORTCUTS))
+  state.status = 'קיצורי ברירת המחדל הוחזרו'
+  emit()
+}
+
+export function importShortcutText(text: string): boolean {
+  const bindings = parseShortcutDocument(text)
+  if (!bindings) return false
+  applyShortcutBindings(bindings)
+  state.status = 'קיצורים יובאו'
+  emit()
+  return true
+}
+
+export function shortcutFileText(): string {
+  return shortcutDocument(state.shortcuts)
+}
+
+let exportAbort: AbortController | null = null
+let exportObjectUrl: string | null = null
+
+export function cancelExport() {
+  exportAbort?.abort()
+}
+
+export function dismissExportResult() {
+  if (exportObjectUrl) URL.revokeObjectURL(exportObjectUrl)
+  exportObjectUrl = null
+  state.exportJob = null
+  emit()
+}
+
+export async function beginExport(): Promise<void> {
+  if (state.exportJob?.running) return
+  const project = structuredClone(state.project)
+  const assets = state.assets.map((asset) => ({ ...asset }))
+  const blobs = assetBlobs()
+  if (exportObjectUrl) URL.revokeObjectURL(exportObjectUrl)
+  exportObjectUrl = null
+  const controller = new AbortController()
+  exportAbort = controller
+  state.exportJob = { running: true, ratio: 0, label: 'מוכן לייצוא', speed: 0, error: null, resultUrl: null, resultSize: 0, savedToDisk: false }
+  emit()
+  const safe = project.name.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim() || 'retzef'
+  let stream: Awaited<ReturnType<typeof pickMp4Stream>> = null
+  try {
+    stream = await pickMp4Stream(`${safe}.mp4`)
+  } catch (caught) {
+    if (caught instanceof DOMException && caught.name === 'AbortError') {
+      state.exportJob = { ...state.exportJob, running: false, label: 'הייצוא בוטל' }
+      emit()
+      return
+    }
+    stream = null
+  }
+  if (controller.signal.aborted) return
+  try {
+    const result = await exportProject(
+      project,
+      assets,
+      (progress) => {
+        if (!state.exportJob || exportAbort !== controller) return
+        state.exportJob = { ...state.exportJob, ratio: progress.ratio, label: progress.label, speed: progress.speed }
+        emit()
+      },
+      controller.signal,
+      { preset: state.exportPreset, stream, blobs },
+    )
+    if (result.blob) {
+      exportObjectUrl = URL.createObjectURL(result.blob)
+      const link = document.createElement('a')
+      link.href = exportObjectUrl
+      link.download = `${safe}.mp4`
+      link.click()
+      state.exportJob = {
+        running: false,
+        ratio: 1,
+        label: 'הקובץ מוכן',
+        speed: state.exportJob?.speed ?? 0,
+        error: null,
+        resultUrl: exportObjectUrl,
+        resultSize: result.blob.size,
+        savedToDisk: false,
+      }
+    } else {
+      state.exportJob = {
+        running: false,
+        ratio: 1,
+        label: 'הקובץ נשמר',
+        speed: state.exportJob?.speed ?? 0,
+        error: null,
+        resultUrl: null,
+        resultSize: 0,
+        savedToDisk: true,
+      }
+    }
+  } catch (caught) {
+    if (!state.exportJob) return
+    const aborted = caught instanceof DOMException && caught.name === 'AbortError'
+    state.exportJob = {
+      ...state.exportJob,
+      running: false,
+      error: aborted ? 'הייצוא בוטל' : caught instanceof Error ? caught.message : 'הייצוא נכשל',
+      label: aborted ? 'הייצוא בוטל' : state.exportJob.label,
+    }
+  } finally {
+    if (exportAbort === controller) exportAbort = null
+    emit()
+  }
 }
 
 let playhead = 0

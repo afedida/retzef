@@ -95,3 +95,16 @@ export async function saveVersions(versions: ProjectVersion[]): Promise<void> {
   await requestToPromise(db.transaction('kv', 'readwrite').objectStore('kv').put(versions.slice(0, 12), 'versions'))
   db.close()
 }
+
+export async function loadKv<T>(key: string): Promise<T | undefined> {
+  const db = await openDb()
+  const value = await requestToPromise(db.transaction('kv', 'readonly').objectStore('kv').get(key))
+  db.close()
+  return value as T | undefined
+}
+
+export async function saveKv(key: string, value: unknown): Promise<void> {
+  const db = await openDb()
+  await requestToPromise(db.transaction('kv', 'readwrite').objectStore('kv').put(value, key))
+  db.close()
+}

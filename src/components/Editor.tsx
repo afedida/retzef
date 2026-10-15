@@ -11,7 +11,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { presetById } from '@/types'
 import { CreatorBar } from '@/components/CreatorBar'
-import { clearExportMarks, copySelection, deleteSelectedMarker, downloadProjectFile, getState, groupSelection, importFiles, markInAtPlayhead, markOutAtPlayhead, nudgeSelectedClip, pasteSelection, placeMarker, redo, removeSelectedClip, rippleSelectedClip, seek, setPps, splitAtPlayhead, toggleLoop, togglePlay, undo, ungroupSelection } from '@/state/editor'
+import { FolderDialog, ShortcutDialog, TemplateDialog } from '@/components/ProjectDialogs'
+import { matchShortcut, type ShortcutId } from '@/lib/shortcuts'
+import { clearExportMarks, copySelection, deleteSelectedMarker, getState, groupSelection, importFiles, markInAtPlayhead, markOutAtPlayhead, nudgeSelectedClip, pasteSelection, placeMarker, redo, removeSelectedClip, rippleSelectedClip, saveActiveProject, seek, setPps, splitAtPlayhead, toggleLoop, togglePlay, undo, ungroupSelection } from '@/state/editor'
 import { useEditor } from '@/state/hooks'
 
 type PanelId = 'media' | 'inspect' | 'library' | 'transcript' | 'record' | 'history'
@@ -37,6 +39,7 @@ function SidePanel({ panel }: { panel: PanelId }) {
 export function Editor() {
   const ready = useEditor((state) => state.ready)
   const pps = useEditor((state) => state.pps)
+  const shortcuts = useEditor((state) => state.shortcuts)
   const [panel, setPanel] = useState<PanelId>('media')
 
   useEffect(() => {
@@ -61,78 +64,47 @@ export function Editor() {
   }, [])
 
   useEffect(() => {
+    const run = (action: ShortcutId) => {
+      const fps = presetById(getState().exportPreset).fps
+      if (action === 'save') void saveActiveProject()
+      else if (action === 'undo') undo()
+      else if (action === 'redo') redo()
+      else if (action === 'copy') copySelection()
+      else if (action === 'paste') pasteSelection()
+      else if (action === 'group') groupSelection()
+      else if (action === 'ungroup') ungroupSelection()
+      else if (action === 'play') togglePlay()
+      else if (action === 'split') splitAtPlayhead()
+      else if (action === 'delete') {
+        if (getState().selectedMarkerId && !getState().selectedClipId) deleteSelectedMarker()
+        else removeSelectedClip()
+      } else if (action === 'rippleDelete') rippleSelectedClip()
+      else if (action === 'nudgeLeft') nudgeSelectedClip(-1 / fps)
+      else if (action === 'nudgeRight') nudgeSelectedClip(1 / fps)
+      else if (action === 'nudgeLeftSecond') nudgeSelectedClip(-1)
+      else if (action === 'nudgeRightSecond') nudgeSelectedClip(1)
+      else if (action === 'marker') placeMarker()
+      else if (action === 'markIn') markInAtPlayhead()
+      else if (action === 'markOut') markOutAtPlayhead()
+      else if (action === 'loop') toggleLoop(!getState().project.loopRegion)
+      else if (action === 'clearMarks') clearExportMarks()
+      else if (action === 'goStart') seek(0)
+      else if (action === 'zoomIn') setPps(pps * 1.2)
+      else if (action === 'zoomOut') setPps(pps / 1.2)
+    }
     const onKey = (event: KeyboardEvent) => {
+      if (getState().shortcutCapture) return
       const target = event.target
       const typing = target instanceof HTMLElement && Boolean(target.closest('input, textarea, select, [contenteditable="true"]'))
-      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyS') {
-        event.preventDefault()
-        void downloadProjectFile()
-        return
-      }
-      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyZ') {
-        event.preventDefault()
-        if (event.shiftKey) redo()
-        else undo()
-        return
-      }
-      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyY') {
-        event.preventDefault()
-        redo()
-        return
-      }
-      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyC' && !typing) {
-        event.preventDefault()
-        copySelection()
-        return
-      }
-      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyV' && !typing) {
-        event.preventDefault()
-        pasteSelection()
-        return
-      }
-      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyG' && !typing) {
-        event.preventDefault()
-        if (event.shiftKey) ungroupSelection()
-        else groupSelection()
-        return
-      }
-      if (getState().exportOpen && !(event.ctrlKey || event.metaKey)) return
-      if (typing) return
-      if (event.code === 'Space') {
-        event.preventDefault()
-        togglePlay()
-      } else if (event.code === 'KeyS') {
-        splitAtPlayhead()
-      } else if (event.code === 'Delete' || event.code === 'Backspace') {
-        event.preventDefault()
-        if (getState().selectedMarkerId && !getState().selectedClipId) deleteSelectedMarker()
-        else if (event.shiftKey) rippleSelectedClip()
-        else removeSelectedClip()
-      } else if (event.code === 'ArrowLeft' || event.code === 'ArrowRight') {
-        event.preventDefault()
-        const direction = event.code === 'ArrowLeft' ? -1 : 1
-        nudgeSelectedClip(direction * (event.shiftKey ? 1 : 1 / presetById(getState().exportPreset).fps))
-      } else if (event.code === 'KeyM') {
-        placeMarker()
-      } else if (event.code === 'KeyI') {
-        markInAtPlayhead()
-      } else if (event.code === 'KeyO') {
-        markOutAtPlayhead()
-      } else if (event.code === 'KeyL') {
-        toggleLoop(!getState().project.loopRegion)
-      } else if (event.code === 'KeyX' && event.altKey) {
-        clearExportMarks()
-      } else if (event.code === 'Home') {
-        seek(0)
-      } else if (event.code === 'Equal' || event.code === 'NumpadAdd') {
-        setPps(pps * 1.2)
-      } else if (event.code === 'Minus' || event.code === 'NumpadSubtract') {
-        setPps(pps / 1.2)
-      }
+      const inDialog = target instanceof HTMLElement && Boolean(target.closest('[role="dialog"]'))
+      const action = matchShortcut(shortcuts, event, typing || inDialog)
+      if (!action) return
+      event.preventDefault()
+      run(action)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [pps])
+  }, [pps, shortcuts])
 
   if (!ready) {
     return <div className="grid h-dvh place-items-center text-sm text-muted-foreground">טוען את הפרויקט…</div>
@@ -141,6 +113,9 @@ export function Editor() {
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
       <TopBar />
+      <FolderDialog />
+      <TemplateDialog />
+      <ShortcutDialog />
       <div className="flex min-h-0 flex-1">
         <nav aria-label="לוחות" className="flex w-12 shrink-0 flex-col items-center gap-1 border-e bg-[#1e1e1e] py-2">
           {PANELS.map((item) => {

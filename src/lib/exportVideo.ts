@@ -16,9 +16,22 @@ import {
   type WrappedCanvas,
 } from 'mediabunny'
 import { getBlob } from '@/lib/blobs'
+import { compositeAvailable, compositeFrame, compositeImage } from '@/lib/composite'
 import { mixProjectAudio, sliceAudioBuffer } from '@/lib/audio'
 import { exportWindow } from '@/lib/creator'
 import { flattenCompounds, projectDuration, sourceTimeAt, videoLayers } from '@/lib/edit'
+import {
+  accelerationLabel,
+  canUseWorkerComposite,
+  chooseAcceleration,
+  fallbackAcceleration,
+  formatRealtime,
+  PIPELINE_DEPTH,
+  realtimeFactor,
+  workerLayerPlan,
+  workerOverlay,
+  type Acceleration,
+} from '@/lib/exportSpeed'
 import { paintFrame, type Visual } from '@/lib/paint'
 import {
   AUDIO_BITRATE,
@@ -32,6 +45,7 @@ import {
 export type ExportProgress = {
   ratio: number
   label: string
+  speed: number
 }
 
 export type ExportResult = {
@@ -103,7 +117,13 @@ export async function exportProject(
   assets: Asset[],
   onProgress: (progress: ExportProgress) => void,
   signal?: AbortSignal,
-  options?: { preset?: ExportPresetId; stream?: WritableStream<StreamTargetChunk> | null },
+  options?: {
+    preset?: ExportPresetId
+    stream?: WritableStream<StreamTargetChunk> | null
+    acceleration?: Acceleration
+    legacy?: boolean
+    blobs?: Map<string, Blob>
+  },
 ): Promise<ExportResult> {
   const preset = presetById(options?.preset ?? '1080p30')
   const timeline = flattenCompounds(project)
@@ -113,6 +133,9 @@ export async function exportProject(
   if (range.duration > 10 * 60) throw new Error('הייצוא בגרסה הזו מוגבל לעשר דקות')
   if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
 
+  const readBlob = (id: string) => options?.blobs?.get(id) ?? getBlob(id)
+  const legacy = options?.legacy === true
+  const pipeline = !legacy
   const highProfile = await canEncodeVideo('avc', {
     width: preset.width,
     height: preset.height,
@@ -139,12 +162,12 @@ export async function exportProject(
     fullCodecString: 'mp4a.40.2',
   })
   if (!nativeAac) {
-    onProgress({ ratio: 0.01, label: 'טוען מקודד AAC' })
+    onProgress({ ratio: 0.01, label: 'טוען מקודד AAC', speed: 0 })
     const { registerAacEncoder } = await import('@mediabunny/aac-encoder')
     registerAacEncoder()
   }
 
-  onProgress({ ratio: 0.02, label: range.ranged ? 'מכין את פס הקול של הטווח' : 'מכין את פס הקול' })
+  onProgress({ ratio: 0.02, label: range.ranged ? 'מכין את פס הקול של הטווח' : 'מכין את פס הקול', speed: 0 })
   const totalFrames = Math.max(1, Math.ceil(range.duration * preset.fps - 1e-6))
   const timelineDuration = totalFrames / preset.fps
   const mixed = await mixProjectAudio(timeline, assets, range.start + timelineDuration)
@@ -159,15 +182,22 @@ export async function exportProject(
   ])
   await document.fonts.ready
 
-  const canvas = document.createElement('canvas')
-  canvas.width = preset.width
-  canvas.height = preset.height
-  canvas.style.position = 'fixed'
-  canvas.style.left = '-12000px'
-  canvas.style.top = '0'
-  document.body.appendChild(canvas)
-  const ctx = canvas.getContext('2d', { alpha: false })
-  if (!ctx) throw new Error('לא ניתן לפתוח משטח ציור לייצוא')
+  const surface = createExportSurface(preset.width, preset.height, legacy)
+  const canvas = surface.canvas
+  const ctx = surface.ctx
+  const requested: Acceleration = legacy ? 'no-preference' : (options?.acceleration ?? 'prefer-hardware')
+  const hardwareOk =
+    requested === 'prefer-hardware'
+      ? await canEncodeVideo('avc', {
+          width: preset.width,
+          height: preset.height,
+          bitrate: preset.videoBitrate,
+          frameRate: preset.fps,
+          hardwareAcceleration: 'prefer-hardware',
+          ...(highProfile ? { fullCodecString: HIGH_PROFILE } : {}),
+        })
+      : false
+  let acceleration = chooseAcceleration(hardwareOk, requested)
 
   const opened: VideoCursor[] = []
   const reversed: { clip: Clip; video: HTMLVideoElement; url: string }[] = []
@@ -175,33 +205,37 @@ export async function exportProject(
   const assetById = new Map(assets.map((asset) => [asset.id, asset]))
 
   const streaming = Boolean(options?.stream)
-  const target = streaming ? new StreamTarget(options!.stream!, { chunked: true, chunkSize: 2 ** 20 }) : new BufferTarget()
-  const output = new Output({
-    format: new Mp4OutputFormat({ fastStart: streaming ? 'fragmented' : 'in-memory' }),
-    target,
-  })
-  const videoSource = new CanvasSource(canvas, {
-    codec: 'avc',
-    quality: new Quality({ bitrate: preset.videoBitrate }),
-    keyFrameInterval: 2,
-    latencyMode: 'quality',
-    hardwareAcceleration: 'no-preference',
-    ...(highProfile ? { fullCodecString: HIGH_PROFILE } : {}),
-  })
-  const audioSource = new AudioBufferSource({
-    codec: 'aac',
-    quality: new Quality({ bitrate: AUDIO_BITRATE }),
-    fullCodecString: 'mp4a.40.2',
-  })
-  output.addVideoTrack(videoSource, { frameRate: preset.fps })
-  output.addAudioTrack(audioSource)
+  const openOutput = (mode: Acceleration) => {
+    const target = streaming ? new StreamTarget(options!.stream!, { chunked: true, chunkSize: 2 ** 20 }) : new BufferTarget()
+    const output = new Output({
+      format: new Mp4OutputFormat({ fastStart: streaming ? 'fragmented' : 'in-memory' }),
+      target,
+    })
+    const videoSource = new CanvasSource(canvas, {
+      codec: 'avc',
+      quality: new Quality({ bitrate: preset.videoBitrate }),
+      keyFrameInterval: 2,
+      latencyMode: 'quality',
+      hardwareAcceleration: mode,
+      ...(highProfile ? { fullCodecString: HIGH_PROFILE } : {}),
+    })
+    const audioSource = new AudioBufferSource({
+      codec: 'aac',
+      quality: new Quality({ bitrate: AUDIO_BITRATE }),
+      fullCodecString: 'mp4a.40.2',
+    })
+    output.addVideoTrack(videoSource, { frameRate: preset.fps })
+    output.addAudioTrack(audioSource)
+    return { target, output, videoSource, audioSource }
+  }
+  let mux = openOutput(acceleration)
 
   try {
-    onProgress({ ratio: 0.08, label: 'פותח את מקורות הווידאו' })
+    onProgress({ ratio: 0.08, label: 'פותח את מקורות הווידאו', speed: 0 })
     for (const clip of timeline.clips) {
       if (!clip.assetId || clip.text) continue
       const asset = assetById.get(clip.assetId)
-      const blob = getBlob(clip.assetId)
+      const blob = readBlob(clip.assetId)
       if (!asset || !blob) continue
       if (asset.kind === 'image') {
         if (!images.has(asset.id)) images.set(asset.id, await createImageBitmap(blob))
@@ -245,10 +279,26 @@ export async function exportProject(
       })
     }
 
-    await output.start()
-    onProgress({ ratio: 0.12, label: 'מקודד AAC' })
-    await audioSource.add(audioBuffer)
-    audioSource.close()
+    while (true) {
+      try {
+        await mux.output.start()
+        break
+      } catch (error) {
+        const next = fallbackAcceleration(acceleration)
+        if (!next) throw error
+        try {
+          await mux.output.cancel()
+        } catch {
+          /* not started */
+        }
+        acceleration = next
+        mux = openOutput(acceleration)
+        onProgress({ ratio: 0.1, label: 'עובר למקודד תוכנה', speed: 0 })
+      }
+    }
+    onProgress({ ratio: 0.12, label: `${accelerationLabel(acceleration)} · מקודד AAC`, speed: 0 })
+    await mux.audioSource.add(audioBuffer)
+    mux.audioSource.close()
 
     const missing = new Set<string>()
     for (const clip of timeline.clips) {
@@ -263,9 +313,21 @@ export async function exportProject(
       if (asset.kind === 'image' && !images.has(asset.id)) missing.add(clip.id)
     }
 
-    for (let frame = 0; frame < totalFrames; frame++) {
-      if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
-      const time = range.start + frame / preset.fps
+    const visualOf = (clip: Clip): Visual => {
+      if (missing.has(clip.id)) return { status: 'missing' }
+      const image = clip.assetId ? images.get(clip.assetId) : undefined
+      if (image) return { status: 'ready', source: image, width: image.width, height: image.height }
+      const hold = reversed.find((item) => item.clip.id === clip.id)
+      if (hold?.video && hold.video.readyState >= 2 && hold.video.videoWidth) {
+        return { status: 'ready', source: hold.video, width: hold.video.videoWidth, height: hold.video.videoHeight }
+      }
+      const cursor = opened.find((item) => item.clip.id === clip.id)
+      if (cursor?.current) {
+        return { status: 'ready', source: cursor.current.canvas, width: cursor.width, height: cursor.height }
+      }
+      return { status: 'pending' }
+    }
+    const settle = async (time: number) => {
       const layers = videoLayers(timeline, time)
       for (const cursor of opened) {
         const layer = layers.find((item) => item.clip.id === cursor.clip.id)
@@ -277,60 +339,97 @@ export async function exportProject(
         if (!layer) continue
         await seekExportVideo(hold.video, sourceTimeAt(hold.clip, layer.sourceLocal))
       }
-      paintFrame(
-        ctx,
-        timeline,
-        time,
-        (clip): Visual => {
-          if (missing.has(clip.id)) return { status: 'missing' }
-          const image = clip.assetId ? images.get(clip.assetId) : undefined
-          if (image) return { status: 'ready', source: image, width: image.width, height: image.height }
-          const hold = reversed.find((item) => item.clip.id === clip.id)
-          if (hold?.video && hold.video.readyState >= 2 && hold.video.videoWidth) {
-            return { status: 'ready', source: hold.video, width: hold.video.videoWidth, height: hold.video.videoHeight }
-          }
-          const cursor = opened.find((item) => item.clip.id === clip.id)
-          if (cursor?.current) {
-            return {
-              status: 'ready',
-              source: cursor.current.canvas,
-              width: cursor.width,
-              height: cursor.height,
+    }
+    let workerComposite = !legacy && compositeAvailable() && canUseWorkerComposite(timeline)
+    const postedStill = new Set<string>()
+    const paintAt = async (time: number) => {
+      if (workerComposite) {
+        try {
+          const plans = workerLayerPlan(timeline, time, preset.width, preset.height, (clip) => {
+            const visual = visualOf(clip)
+            return visual.status === 'ready' ? { width: visual.width, height: visual.height } : null
+          })
+          const layers = []
+          for (const plan of plans) {
+            const clip = timeline.clips.find((item) => item.id === plan.clipId)
+            if (!clip) continue
+            const visual = visualOf(clip)
+            if (visual.status !== 'ready') continue
+            const imageId = clip.assetId ?? clip.id
+            const still = Boolean(clip.assetId && images.has(clip.assetId))
+            if (!still || !postedStill.has(imageId)) {
+              compositeImage(imageId, await createImageBitmap(visual.source as ImageBitmapSource))
+              if (still) postedStill.add(imageId)
             }
+            layers.push({ imageId, dx: plan.dx, dy: plan.dy, dw: plan.dw, dh: plan.dh, opacity: plan.opacity })
           }
-          return { status: 'pending' }
-        },
-        null,
-      )
-      await videoSource.add(frame / preset.fps, 1 / preset.fps)
+          const overlay = workerOverlay(timeline, time, preset.width, preset.height)
+          const composed = await compositeFrame({
+            width: preset.width,
+            height: preset.height,
+            layers,
+            letterboxPx: overlay.letterboxPx,
+            progress: overlay.progress,
+          })
+          ctx.drawImage(composed, 0, 0)
+          composed.close()
+          return
+        } catch {
+          workerComposite = false
+        }
+      }
+      paintFrame(ctx, timeline, time, visualOf, null)
+    }
+
+    const encodeStarted = performance.now()
+    const encodes: Promise<void>[] = []
+    await settle(range.start)
+    for (let frame = 0; frame < totalFrames; frame++) {
+      if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
+      const time = range.start + frame / preset.fps
+      await paintAt(time)
+      const encoded = mux.videoSource.add(frame / preset.fps, 1 / preset.fps)
+      const upcoming = frame + 1 < totalFrames ? settle(range.start + (frame + 1) / preset.fps) : Promise.resolve()
+      if (pipeline) {
+        encodes.push(encoded)
+        if (encodes.length >= PIPELINE_DEPTH) await encodes.shift()
+        await upcoming
+      } else {
+        await encoded
+        await upcoming
+      }
       if (frame % 4 === 0 || frame === totalFrames - 1) {
+        const speed = realtimeFactor((frame + 1) / preset.fps, (performance.now() - encodeStarted) / 1000)
         onProgress({
           ratio: 0.15 + 0.8 * ((frame + 1) / totalFrames),
-          label: `מרנדר פריים ${frame + 1} מתוך ${totalFrames}`,
+          label: `מרנדר פריים ${frame + 1} מתוך ${totalFrames} · ${formatRealtime(speed)} זמן אמת`,
+          speed,
         })
         await new Promise((resolve) => setTimeout(resolve, 0))
       }
     }
+    while (encodes.length) await encodes.shift()
 
-    videoSource.close()
-    onProgress({ ratio: 0.97, label: 'סוגר את קובץ ה-MP4' })
-    await output.finalize()
+    mux.videoSource.close()
+    onProgress({ ratio: 0.97, label: 'סוגר את קובץ ה-MP4', speed: realtimeFactor(timelineDuration, (performance.now() - encodeStarted) / 1000) })
+    await mux.output.finalize()
+    const speed = realtimeFactor(timelineDuration, (performance.now() - encodeStarted) / 1000)
     if (streaming) {
-      onProgress({ ratio: 1, label: 'הקובץ נשמר' })
+      onProgress({ ratio: 1, label: 'הקובץ נשמר', speed })
       return { mode: 'file', blob: null }
     }
-    if (!(target instanceof BufferTarget) || !target.buffer) throw new Error('הייצוא הסתיים בלי נתונים')
-    onProgress({ ratio: 1, label: 'הקובץ מוכן' })
-    return { mode: 'download', blob: new Blob([target.buffer], { type: 'video/mp4' }) }
+    if (!(mux.target instanceof BufferTarget) || !mux.target.buffer) throw new Error('הייצוא הסתיים בלי נתונים')
+    onProgress({ ratio: 1, label: `הקובץ מוכן · ${formatRealtime(speed)} זמן אמת`, speed })
+    return { mode: 'download', blob: new Blob([mux.target.buffer], { type: 'video/mp4' }) }
   } catch (error) {
     try {
-      await output.cancel()
+      await mux.output.cancel()
     } catch {
       /* already closed */
     }
     throw error
   } finally {
-    canvas.remove()
+    surface.release()
     for (const cursor of opened) cursor.input.dispose()
     for (const hold of reversed) {
       hold.video.src = ''
@@ -338,4 +437,26 @@ export async function exportProject(
     }
     for (const image of images.values()) image.close()
   }
+}
+
+function createExportSurface(width: number, height: number, legacy: boolean): {
+  canvas: HTMLCanvasElement | OffscreenCanvas
+  ctx: CanvasRenderingContext2D
+  release: () => void
+} {
+  if (!legacy && typeof OffscreenCanvas !== 'undefined') {
+    const canvas = new OffscreenCanvas(width, height)
+    const ctx = canvas.getContext('2d', { alpha: false })
+    if (ctx) return { canvas, ctx: ctx as unknown as CanvasRenderingContext2D, release: () => undefined }
+  }
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  canvas.style.position = 'fixed'
+  canvas.style.left = '-12000px'
+  canvas.style.top = '0'
+  document.body.appendChild(canvas)
+  const ctx = canvas.getContext('2d', { alpha: false })
+  if (!ctx) throw new Error('לא ניתן לפתוח משטח ציור לייצוא')
+  return { canvas, ctx, release: () => canvas.remove() }
 }
