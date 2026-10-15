@@ -1,3 +1,5 @@
+import { t } from '@/lib/i18n'
+
 export const SHORTCUT_IDS = [
   'save',
   'undo',
@@ -169,7 +171,7 @@ export function chordFromEvent(event: ShortcutEvent): Chord {
 }
 
 const CODE_LABEL: Record<string, string> = {
-  Space: 'רווח',
+  Space: '',
   Delete: 'Delete',
   Backspace: 'Backspace',
   ArrowLeft: '←',
@@ -186,8 +188,8 @@ export function formatChord(value: Chord): string {
   if (value.mod) parts.push('Ctrl')
   if (value.alt) parts.push('Alt')
   if (value.shift) parts.push('Shift')
-  const named = CODE_LABEL[value.code]
-  parts.push(named ?? (value.code.startsWith('Key') ? value.code.slice(3) : value.code))
+  const named = value.code === 'Space' ? t('key.space') : CODE_LABEL[value.code]
+  parts.push(named || (value.code.startsWith('Key') ? value.code.slice(3) : value.code))
   return parts.join('+')
 }
 

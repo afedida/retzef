@@ -1,4 +1,5 @@
 import { fillerRanges } from '@/lib/fillers'
+import { t } from '@/lib/i18n'
 import { sampleLane } from '@/lib/keyframes'
 import {
   DEFAULT_CHROMA,
@@ -49,7 +50,7 @@ export function blankProject(): Project {
   return {
     version: 1,
     id: crypto.randomUUID(),
-    name: 'פרויקט חדש',
+    name: t('content.newProject'),
     tracks: DEFAULT_TRACKS.map((track) => ({ ...track })),
     clips: [],
     markers: [],
@@ -88,7 +89,7 @@ export function defaultColor(): ColorGrade {
 
 export function defaultText(): TextStyle {
   return {
-    content: 'שלום, זה רצף',
+    content: t('content.hello'),
     fontSize: 72,
     color: '#ffffff',
     x: 0.5,
@@ -658,7 +659,7 @@ export function addTextTrack(project: Project): Project {
   const track: Track = {
     id: crypto.randomUUID(),
     type: 'text',
-    name: `טקסט ${count}`,
+    name: t('content.textTrackN', { n: count }),
     duck: false,
     volume: 1,
     locked: false,
@@ -702,7 +703,7 @@ export function addMarker(project: Project, time: number, label?: string): Proje
   const marker: Marker = {
     id: crypto.randomUUID(),
     time: Math.max(0, time),
-    label: label?.trim() || 'סמן',
+    label: label?.trim() || t('content.marker'),
   }
   return { ...project, markers: [...project.markers, marker].sort((a, b) => a.time - b.time) }
 }

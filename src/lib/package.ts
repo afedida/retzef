@@ -1,5 +1,6 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { getBlob } from '@/lib/blobs'
+import { t } from '@/lib/i18n'
 import { coerceProject } from '@/lib/edit'
 import type { Asset, Project } from '@/types'
 
@@ -27,13 +28,13 @@ export async function packProject(project: Project, assets: Asset[]): Promise<Ui
 export async function unpackProject(file: File): Promise<{ project: Project; assets: { asset: Asset; blob: Blob }[] }> {
   const entries = unzipSync(new Uint8Array(await file.arrayBuffer()))
   const json = entries['project.json']
-  if (!json) throw new Error('החבילה לא מכילה פרויקט')
+  if (!json) throw new Error(t('error.badPackage'))
   const manifest = JSON.parse(strFromU8(json)) as PackManifest
   if (!manifest || manifest.format !== 'retzef-pack' || !Array.isArray(manifest.assets)) {
-    throw new Error('החבילה לא תקינה')
+    throw new Error(t('error.badPackageFile'))
   }
   const project = coerceProject(manifest.project)
-  if (!project) throw new Error('הפרויקט בחבילה לא תקין')
+  if (!project) throw new Error(t('error.badPackageProject'))
   const assets: { asset: Asset; blob: Blob }[] = []
   for (const raw of manifest.assets) {
     if (!raw || typeof raw.id !== 'string') continue

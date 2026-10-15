@@ -23,7 +23,7 @@ import {
   toggleLoop,
   toggleProgressBar,
 } from '@/state/editor'
-import { useEditor } from '@/state/hooks'
+import { useEditor, useT } from '@/state/hooks'
 import type { Clip } from '@/types'
 
 function Mini({
@@ -43,6 +43,7 @@ function Mini({
 }
 
 export function CreatorBar() {
+  const t = useT()
   const project = useEditor((state) => state.project)
   const guides = useEditor((state) => state.showGuides)
   const bypass = useEditor((state) => state.gradeBypass)
@@ -50,20 +51,20 @@ export function CreatorBar() {
 
   return (
     <div className="flex flex-wrap items-center gap-1 border-b bg-[#1e1e1e] px-2 py-1.5">
-      <span className="pe-1 text-[11px] font-medium text-muted-foreground">יוטיוב</span>
-      <Mini label="כניסה" onClick={markInAtPlayhead} />
-      <Mini label="יציאה" onClick={markOutAtPlayhead} />
-      <Mini label="ניקוי טווח" onClick={clearExportMarks} />
-      <Mini label="לולאה" pressed={project.loopRegion} onClick={() => toggleLoop(!project.loopRegion)} />
-      <Mini label="מסגרת" pressed={guides} onClick={() => toggleGuides(!guides)} />
-      <Mini label="לפני/אחרי" pressed={bypass} onClick={() => toggleGradeBypass(!bypass)} />
-      <Mini label="פס התקדמות" pressed={project.progressBar} onClick={() => toggleProgressBar(!project.progressBar)} />
-      <Mini label="פסי קולנוע" pressed={(project.letterbox ?? 0) > 0} onClick={() => toggleLetterbox((project.letterbox ?? 0) <= 0)} />
-      <Mini label="מסך סיום" onClick={insertEndScreen} />
-      <Mini label="זום ג'אמפ" onClick={jumpZoomTrack} />
-      <Mini label="התאמת מוזיקה" onClick={fitMusicBed} />
-      <Mini label="פיצול לרוחב" onClick={() => splitSelection('horizontal')} />
-      <Mini label="פיצול לגובה" onClick={() => splitSelection('vertical')} />
+      <span className="pe-1 text-[11px] font-medium text-muted-foreground">{t('creator.youtube')}</span>
+      <Mini label={t('creator.markIn')} onClick={markInAtPlayhead} />
+      <Mini label={t('creator.markOut')} onClick={markOutAtPlayhead} />
+      <Mini label={t('creator.clearRange')} onClick={clearExportMarks} />
+      <Mini label={t('creator.loop')} pressed={project.loopRegion} onClick={() => toggleLoop(!project.loopRegion)} />
+      <Mini label={t('creator.guides')} pressed={guides} onClick={() => toggleGuides(!guides)} />
+      <Mini label={t('creator.beforeAfter')} pressed={bypass} onClick={() => toggleGradeBypass(!bypass)} />
+      <Mini label={t('creator.progress')} pressed={project.progressBar} onClick={() => toggleProgressBar(!project.progressBar)} />
+      <Mini label={t('creator.letterbox')} pressed={(project.letterbox ?? 0) > 0} onClick={() => toggleLetterbox((project.letterbox ?? 0) <= 0)} />
+      <Mini label={t('creator.endScreen')} onClick={insertEndScreen} />
+      <Mini label={t('creator.jumpZoom')} onClick={jumpZoomTrack} />
+      <Mini label={t('creator.fitMusic')} onClick={fitMusicBed} />
+      <Mini label={t('creator.splitH')} onClick={() => splitSelection('horizontal')} />
+      <Mini label={t('creator.splitV')} onClick={() => splitSelection('vertical')} />
       {ranged && (
         <span dir="ltr" className="font-mono text-[11px] text-[#50e6ff]">
           {project.markIn!.toFixed(1)}–{project.markOut!.toFixed(1)}s
@@ -74,25 +75,26 @@ export function CreatorBar() {
 }
 
 export function ClipCreatorFields({ clip }: { clip: Clip }) {
+  const t = useT()
   const toggle = (patch: Partial<Clip>) => {
     patchClip(clip.id, patch)
     endGesture()
   }
   return (
     <div className="space-y-3">
-      <p className="text-xs font-medium">קול ותמונה</p>
+      <p className="text-xs font-medium">{t('creator.soundPicture')}</p>
       {!clip.text && (
         <>
           <label className="block space-y-1 text-xs">
             <span className="flex justify-between">
-              פאן
+              {t('creator.pan')}
               <span dir="ltr" className="font-mono text-muted-foreground">{Math.round((clip.pan ?? 0) * 100)}</span>
             </span>
             <input
               type="range"
               min={-100}
               max={100}
-              aria-label="פאן"
+              aria-label={t('creator.pan')}
               value={Math.round((clip.pan ?? 0) * 100)}
               onChange={(event) => patchClip(clip.id, { pan: Number(event.target.value) / 100 })}
               onPointerUp={() => endGesture()}
@@ -102,14 +104,14 @@ export function ClipCreatorFields({ clip }: { clip: Clip }) {
           </label>
           <label className="block space-y-1 text-xs">
             <span className="flex justify-between">
-              קרוספייד שמע
+              {t('creator.crossfade')}
               <span dir="ltr" className="font-mono text-muted-foreground">{(clip.audioCrossfade ?? 0).toFixed(2)}s</span>
             </span>
             <input
               type="range"
               min={0}
               max={150}
-              aria-label="קרוספייד שמע"
+              aria-label={t('creator.crossfade')}
               value={Math.round((clip.audioCrossfade ?? 0) * 100)}
               onChange={(event) => patchClip(clip.id, { audioCrossfade: Number(event.target.value) / 100 })}
               onPointerUp={() => endGesture()}
@@ -119,34 +121,34 @@ export function ClipCreatorFields({ clip }: { clip: Clip }) {
           </label>
           <label className="flex items-center gap-2 text-xs">
             <input type="checkbox" checked={clip.voice === true} onChange={(event) => toggle({ voice: event.target.checked })} />
-            ליטוש קול
+            {t('creator.voice')}
           </label>
           <label className="flex items-center gap-2 text-xs">
             <input type="checkbox" checked={clip.gate === true} onChange={(event) => toggle({ gate: event.target.checked })} />
-            גייט רעש
+            {t('creator.gate')}
           </label>
           <div className="flex flex-wrap gap-2">
-            <Mini label="הפרדת שמע" onClick={detachSelectedAudio} />
-            <Mini label="ג'י-קאט" onClick={jCutSelected} />
-            <Mini label="אל-קאט" onClick={lCutSelected} />
+            <Mini label={t('creator.detach')} onClick={detachSelectedAudio} />
+            <Mini label={t('creator.jcut')} onClick={jCutSelected} />
+            <Mini label={t('creator.lcut')} onClick={lCutSelected} />
           </div>
           <div className="flex flex-wrap gap-2">
-            <Mini label="היפוך אופקי" pressed={clip.flipH} onClick={() => toggleFlip('h')} />
-            <Mini label="היפוך אנכי" pressed={clip.flipV} onClick={() => toggleFlip('v')} />
-            <Mini label={`סיבוב ${clip.rotation ?? 0}°`} onClick={rotateSelected} />
+            <Mini label={t('creator.flipH')} pressed={clip.flipH} onClick={() => toggleFlip('h')} />
+            <Mini label={t('creator.flipV')} pressed={clip.flipV} onClick={() => toggleFlip('v')} />
+            <Mini label={t('creator.rotate', { degrees: clip.rotation ?? 0 })} onClick={rotateSelected} />
           </div>
         </>
       )}
       {clip.text && (
         <div className="flex flex-wrap gap-2">
-          <Mini label="כתוביות למטה" onClick={() => anchorCaption('bottom')} />
-          <Mini label="כתוביות במרכז" onClick={() => anchorCaption('middle')} />
-          <Mini label="כתוביות למעלה" onClick={() => anchorCaption('top')} />
+          <Mini label={t('creator.capBottom')} onClick={() => anchorCaption('bottom')} />
+          <Mini label={t('creator.capMiddle')} onClick={() => anchorCaption('middle')} />
+          <Mini label={t('creator.capTop')} onClick={() => anchorCaption('top')} />
         </div>
       )}
       <div className="flex flex-wrap gap-2">
-        <Mini label="העתקת מאפיינים" onClick={copyAttributes} />
-        <Mini label="הדבקת מאפיינים" onClick={pasteAttributes} />
+        <Mini label={t('creator.copyAttr')} onClick={copyAttributes} />
+        <Mini label={t('creator.pasteAttr')} onClick={pasteAttributes} />
       </div>
     </div>
   )

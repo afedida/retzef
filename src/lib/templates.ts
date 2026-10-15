@@ -1,4 +1,5 @@
 import { clipEnd, defaultText, insertClip, makeShapeClip, makeTextClip, projectDuration } from '@/lib/edit'
+import { t } from '@/lib/i18n'
 import type { Asset, Clip, Project, ShapeKind } from '@/types'
 
 function place(project: Project, clip: Clip): Project {
@@ -11,7 +12,7 @@ export function addLowerThird(project: Project, time: number): Project {
   text.duration = 4
   text.text = {
     ...defaultText(),
-    content: 'שם הדובר\nתפקיד או כותרת',
+    content: t('content.lowerThird'),
     y: 0.8,
     fontSize: 48,
     align: 'start',
@@ -23,7 +24,7 @@ export function addLowerThird(project: Project, time: number): Project {
 export function addIntro(project: Project): Project {
   const text = makeTextClip(0, 't1')
   text.duration = 3.5
-  text.text = { ...defaultText(), content: 'פתיח', fontSize: 120, y: 0.46, animation: 'fade' }
+  text.text = { ...defaultText(), content: t('content.intro'), fontSize: 120, y: 0.46, animation: 'fade' }
   return place(project, text)
 }
 
@@ -31,7 +32,7 @@ export function addOutro(project: Project): Project {
   const start = Math.max(0, projectDuration(project) - 0.05)
   const text = makeTextClip(start, 't1')
   text.duration = 3.5
-  text.text = { ...defaultText(), content: 'תודה שצפיתם', fontSize: 84, y: 0.46, animation: 'slide' }
+  text.text = { ...defaultText(), content: t('content.outro'), fontSize: 84, y: 0.46, animation: 'slide' }
   return place(project, text)
 }
 

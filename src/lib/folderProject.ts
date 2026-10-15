@@ -1,4 +1,5 @@
 import { coerceProject } from '@/lib/edit'
+import { t } from '@/lib/i18n'
 import type { Asset, Project } from '@/types'
 
 export const FOLDER_FILE = 'retzef.json'
@@ -111,13 +112,13 @@ export async function writeProjectFolder(
 
 export async function readProjectFolder(io: FolderIO): Promise<{ project: Project; assets: { asset: Asset; blob: Blob }[] }> {
   const file = await io.read(FOLDER_FILE)
-  if (!file) throw new Error('התיקייה לא מכילה פרויקט של רצף')
+  if (!file) throw new Error(t('error.badFolder'))
   const parsed = JSON.parse(await file.text()) as Partial<FolderManifest>
   if (!parsed || parsed.format !== FOLDER_FORMAT || !Array.isArray(parsed.assets)) {
-    throw new Error('קובץ הפרויקט בתיקייה לא תקין')
+    throw new Error(t('error.badFolderFile'))
   }
   const project = coerceProject(parsed.project)
-  if (!project) throw new Error('הפרויקט בתיקייה לא תקין')
+  if (!project) throw new Error(t('error.badFolderProject'))
   const assets: { asset: Asset; blob: Blob }[] = []
   for (const raw of parsed.assets) {
     if (!raw || typeof raw.id !== 'string' || typeof raw.file !== 'string') continue

@@ -1,6 +1,14 @@
 import { ALL_FORMATS, BlobSource, Input } from 'mediabunny'
+import { t } from '@/lib/i18n'
 import { containRect } from '@/lib/time'
 import type { MediaKind } from '@/types'
+
+export class MediaReadError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MediaReadError'
+  }
+}
 
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'])
 
@@ -35,7 +43,7 @@ export async function probeFile(file: File): Promise<{
   try {
     const video = await input.getPrimaryVideoTrack()
     const audio = await input.getPrimaryAudioTrack()
-    if (!video && !audio) throw new Error(`לא הצלחתי לקרוא מדיה מתוך ${file.name}`)
+    if (!video && !audio) throw new MediaReadError(t('error.mediaInside', { name: file.name }))
     const duration = await input.computeDuration()
     return {
       name: file.name,
@@ -48,8 +56,8 @@ export async function probeFile(file: File): Promise<{
       blob: file,
     }
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('לא הצלחתי')) throw error
-    throw new Error(`לא הצלחתי לקרוא את ${file.name}`)
+    if (error instanceof MediaReadError) throw error
+    throw new MediaReadError(t('error.mediaFile', { name: file.name }))
   } finally {
     input.dispose()
   }
@@ -115,7 +123,7 @@ export async function captureImageThumbnail(blob: Blob): Promise<string | null> 
 export async function readProjectFile(file: File): Promise<unknown> {
   const text = await file.text()
   const parsed: unknown = JSON.parse(text)
-  if (!parsed || typeof parsed !== 'object') throw new Error('קובץ הפרויקט לא תקין')
+  if (!parsed || typeof parsed !== 'object') throw new Error(t('error.badProject'))
   const raw = parsed as { format?: string; project?: unknown }
   if (raw.format === 'retzef') return raw.project
   return parsed

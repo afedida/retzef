@@ -1,4 +1,5 @@
 import { loadKv, saveKv } from '@/lib/db'
+import { t } from '@/lib/i18n'
 import {
   folderSupported,
   readProjectFolder,
@@ -146,18 +147,18 @@ async function activate(handle: DirectoryHandle, name: string, written: Set<stri
 
 export async function chooseProjectFolder(project: Project, assets: Asset[], blobs: Map<string, Blob>): Promise<LinkedFolder> {
   const open = picker()
-  if (!open) throw new Error('הדפדפן לא תומך בשמירה לתיקייה. אפשר לשמור JSON או חבילת zip.')
+  if (!open) throw new Error(t('error.noPicker'))
   const handle = await open({ mode: 'readwrite', id: 'retzef-project' })
-  if (!(await permission(handle, true))) throw new Error('אין הרשאת כתיבה לתיקייה')
+  if (!(await permission(handle, true))) throw new Error(t('error.noWrite'))
   const written = await writeProjectFolder(adapter(handle), project, assets, blobs, new Set())
   return activate(handle, project.name, written)
 }
 
 export async function openProjectFolder(): Promise<{ project: Project; assets: { asset: Asset; blob: Blob }[]; link: LinkedFolder }> {
   const open = picker()
-  if (!open) throw new Error('הדפדפן לא תומך בפתיחת תיקייה. אפשר לטעון JSON או חבילת zip.')
+  if (!open) throw new Error(t('error.noOpen'))
   const handle = await open({ mode: 'readwrite', id: 'retzef-project' })
-  if (!(await permission(handle, true))) throw new Error('אין הרשאה לתיקייה')
+  if (!(await permission(handle, true))) throw new Error(t('error.noRead'))
   const loaded = await readProjectFolder(adapter(handle))
   const link = await activate(handle, loaded.project.name, new Set(loaded.assets.map((item) => item.asset.id)))
   return { ...loaded, link }
@@ -166,8 +167,8 @@ export async function openProjectFolder(): Promise<{ project: Project; assets: {
 export async function reopenRecentFolder(id: string): Promise<{ project: Project; assets: { asset: Asset; blob: Blob }[]; link: LinkedFolder }> {
   const records = await readRecent()
   const record = records.find((item) => item.id === id)
-  if (!record) throw new Error('הפרויקט האחרון לא נמצא')
-  if (!(await permission(record.handle, true))) throw new Error('צריך לאשר שוב גישה לתיקייה')
+  if (!record) throw new Error(t('error.recentMissing'))
+  if (!(await permission(record.handle, true))) throw new Error(t('error.reauth'))
   const loaded = await readProjectFolder(adapter(record.handle))
   const link = await activate(record.handle, loaded.project.name, new Set(loaded.assets.map((item) => item.asset.id)))
   return { ...loaded, link }

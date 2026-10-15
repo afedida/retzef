@@ -8,12 +8,14 @@ import {
   LayoutTemplate,
   Redo2,
   Save,
+  Settings,
   Undo2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { projectDuration } from '@/lib/edit'
+import { presetLabel } from '@/lib/i18n'
 import { formatClock } from '@/lib/time'
 import { EXPORT_PRESETS, presetById, type ExportPresetId } from '@/types'
 import {
@@ -27,11 +29,14 @@ import {
   setExportOpen,
   setExportPreset,
   setFolderOpen,
+  setLanguage,
+  setSettingsOpen,
   setShortcutOpen,
   setTemplateOpen,
   undo,
 } from '@/state/editor'
-import { useEditor } from '@/state/hooks'
+import { useEditor, useT } from '@/state/hooks'
+import type { Language } from '@/lib/i18n'
 
 function ToolButton({
   label,
@@ -56,7 +61,29 @@ function ToolButton({
   )
 }
 
+function LanguageToggle({ language }: { language: Language }) {
+  const t = useT()
+  const item = (id: Language, label: string) => (
+    <button
+      type="button"
+      aria-pressed={language === id}
+      className={`h-6 rounded-full px-2 text-[11px] ${language === id ? 'bg-[#094771] text-white' : 'text-muted-foreground'}`}
+      onClick={() => setLanguage(id)}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <div className="flex items-center rounded-full border border-border p-0.5" role="group" aria-label={t('language.label')}>
+      {item('he', t('language.he'))}
+      {item('en', t('language.en'))}
+    </div>
+  )
+}
+
 export function TopBar() {
+  const t = useT()
+  const language = useEditor((state) => state.language)
   const project = useEditor((state) => state.project)
   const canUndo = useEditor((state) => state.canUndo)
   const canRedo = useEditor((state) => state.canRedo)
@@ -70,11 +97,11 @@ export function TopBar() {
     <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-[#252526] px-3">
       <div className="flex items-center gap-2 pe-2">
         <div className="grid size-7 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">
-          ר
+          {t('app.mark')}
         </div>
         <div className="leading-tight">
-          <div className="text-sm font-semibold">רצף</div>
-          <div className="text-[11px] text-muted-foreground">עורך וידאו</div>
+          <div className="text-sm font-semibold">{t('app.name')}</div>
+          <div className="text-[11px] text-muted-foreground">{t('app.tagline')}</div>
         </div>
       </div>
       <Input
@@ -82,32 +109,35 @@ export function TopBar() {
         onChange={(event) => live((base) => ({ ...base, name: event.target.value }))}
         onBlur={() => endGesture()}
         className="max-w-56"
-        aria-label="שם הפרויקט"
+        aria-label={t('top.projectName')}
         spellCheck={false}
       />
       <div className="ms-1 flex items-center gap-1">
-        <ToolButton label="בטל (Ctrl+Z)" disabled={!canUndo} onClick={undo}>
+        <ToolButton label={t('top.undo')} disabled={!canUndo} onClick={undo}>
           <Undo2 />
         </ToolButton>
-        <ToolButton label="בצע שוב (Ctrl+Shift+Z)" disabled={!canRedo} onClick={redo}>
+        <ToolButton label={t('top.redo')} disabled={!canRedo} onClick={redo}>
           <Redo2 />
         </ToolButton>
-        <ToolButton label="שמירה לתיקייה" onClick={() => setFolderOpen(true)}>
+        <ToolButton label={t('top.folder')} onClick={() => setFolderOpen(true)}>
           <HardDrive />
         </ToolButton>
-        <ToolButton label="תבניות" onClick={() => setTemplateOpen(true)}>
+        <ToolButton label={t('top.templates')} onClick={() => setTemplateOpen(true)}>
           <LayoutTemplate />
         </ToolButton>
-        <ToolButton label="קיצורים" onClick={() => setShortcutOpen(true)}>
+        <ToolButton label={t('top.shortcuts')} onClick={() => setShortcutOpen(true)}>
           <Keyboard />
         </ToolButton>
-        <ToolButton label="שמירת JSON" onClick={downloadProjectFile}>
+        <ToolButton label={t('top.settings')} onClick={() => setSettingsOpen(true)}>
+          <Settings />
+        </ToolButton>
+        <ToolButton label={t('top.saveJson')} onClick={downloadProjectFile}>
           <Save />
         </ToolButton>
-        <ToolButton label="שמירת חבילה עם מדיה" onClick={() => void downloadProjectPackage()}>
+        <ToolButton label={t('top.savePackage')} onClick={() => void downloadProjectPackage()}>
           <Archive />
         </ToolButton>
-        <ToolButton label="טעינת JSON או חבילה" onClick={() => fileRef.current?.click()}>
+        <ToolButton label={t('top.load')} onClick={() => fileRef.current?.click()}>
           <FolderOpen />
         </ToolButton>
         <input
@@ -123,15 +153,16 @@ export function TopBar() {
         />
       </div>
       <div className="ms-auto flex items-center gap-2">
+        <LanguageToggle language={language} />
         <select
-          aria-label="יחס תמונה"
+          aria-label={t('top.aspect')}
           className="h-7 rounded-full border border-border bg-background px-2 text-xs focus-visible:ring-2 focus-visible:ring-ring"
           value={preset.id}
           onChange={(event) => setExportPreset(event.target.value as ExportPresetId)}
         >
           {EXPORT_PRESETS.map((item) => (
             <option key={item.id} value={item.id}>
-              {item.label}
+              {presetLabel(item.id)}
             </option>
           ))}
         </select>
@@ -146,7 +177,7 @@ export function TopBar() {
                 cancelExport()
               }}
             >
-              ביטול
+              {t('top.cancel')}
             </span>
           </button>
         )}
@@ -155,7 +186,7 @@ export function TopBar() {
         </div>
         <Button type="button" size="sm" disabled={duration <= 0} onClick={() => setExportOpen(true)}>
           <Download />
-          ייצוא MP4
+          {t('top.export')}
         </Button>
       </div>
     </header>
