@@ -32,6 +32,7 @@ import {
   workerOverlay,
   type Acceleration,
 } from '@/lib/exportSpeed'
+import { t } from '@/lib/i18n'
 import { paintFrame, type Visual } from '@/lib/paint'
 import {
   AUDIO_BITRATE,
@@ -104,7 +105,7 @@ async function seekExportVideo(video: HTMLVideoElement, time: number): Promise<v
     const fail = () => {
       video.removeEventListener('seeked', done)
       video.removeEventListener('error', fail)
-      reject(new Error('חיפוש בפריים הפוך נכשל'))
+      reject(new Error(t('error.reverseSeek')))
     }
     video.addEventListener('seeked', done)
     video.addEventListener('error', fail)
@@ -129,9 +130,9 @@ export async function exportProject(
   const timeline = flattenCompounds(project)
   const duration = projectDuration(timeline)
   const range = exportWindow(timeline)
-  if (duration <= 0 || range.duration <= 0) throw new Error('אין קליפים על ציר הזמן')
-  if (range.duration > 10 * 60) throw new Error('הייצוא בגרסה הזו מוגבל לעשר דקות')
-  if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
+  if (duration <= 0 || range.duration <= 0) throw new Error(t('error.noClips'))
+  if (range.duration > 10 * 60) throw new Error(t('error.tenMinutes'))
+  if (signal?.aborted) throw new DOMException(t('error.exportCancelled'), 'AbortError')
 
   const readBlob = (id: string) => options?.blobs?.get(id) ?? getBlob(id)
   const legacy = options?.legacy === true
@@ -152,7 +153,7 @@ export async function exportProject(
         frameRate: preset.fps,
       })
   if (!videoOk) {
-    throw new Error('הדפדפן לא תומך בקידוד H.264. ייצוא עובד ב-Chrome או ב-Edge.')
+    throw new Error(t('error.noH264'))
   }
 
   const nativeAac = await canEncodeAudio('aac', {
@@ -162,17 +163,17 @@ export async function exportProject(
     fullCodecString: 'mp4a.40.2',
   })
   if (!nativeAac) {
-    onProgress({ ratio: 0.01, label: 'טוען מקודד AAC', speed: 0 })
+    onProgress({ ratio: 0.01, label: t('error.aac'), speed: 0 })
     const { registerAacEncoder } = await import('@mediabunny/aac-encoder')
     registerAacEncoder()
   }
 
-  onProgress({ ratio: 0.02, label: range.ranged ? 'מכין את פס הקול של הטווח' : 'מכין את פס הקול', speed: 0 })
+  onProgress({ ratio: 0.02, label: range.ranged ? t('error.audioRange') : t('error.audio'), speed: 0 })
   const totalFrames = Math.max(1, Math.ceil(range.duration * preset.fps - 1e-6))
   const timelineDuration = totalFrames / preset.fps
   const mixed = await mixProjectAudio(timeline, assets, range.start + timelineDuration)
   const audioBuffer = sliceAudioBuffer(mixed, range.start, timelineDuration)
-  if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
+  if (signal?.aborted) throw new DOMException(t('error.exportCancelled'), 'AbortError')
 
   await Promise.all([
     document.fonts.load('700 72px Heebo'),
@@ -231,7 +232,7 @@ export async function exportProject(
   let mux = openOutput(acceleration)
 
   try {
-    onProgress({ ratio: 0.08, label: 'פותח את מקורות הווידאו', speed: 0 })
+    onProgress({ ratio: 0.08, label: t('error.openSources'), speed: 0 })
     for (const clip of timeline.clips) {
       if (!clip.assetId || clip.text) continue
       const asset = assetById.get(clip.assetId)
@@ -251,7 +252,7 @@ export async function exportProject(
         video.src = url
         await new Promise<void>((resolve, reject) => {
           video.onloadeddata = () => resolve()
-          video.onerror = () => reject(new Error('לא ניתן לפתוח קליפ הפוך'))
+          video.onerror = () => reject(new Error(t('error.reverseOpen')))
         })
         reversed.push({ clip, video, url })
         continue
@@ -293,10 +294,10 @@ export async function exportProject(
         }
         acceleration = next
         mux = openOutput(acceleration)
-        onProgress({ ratio: 0.1, label: 'עובר למקודד תוכנה', speed: 0 })
+        onProgress({ ratio: 0.1, label: t('error.software'), speed: 0 })
       }
     }
-    onProgress({ ratio: 0.12, label: `${accelerationLabel(acceleration)} · מקודד AAC`, speed: 0 })
+    onProgress({ ratio: 0.12, label: t('error.encoder', { label: accelerationLabel(acceleration) }), speed: 0 })
     await mux.audioSource.add(audioBuffer)
     mux.audioSource.close()
 
@@ -385,7 +386,7 @@ export async function exportProject(
     const encodes: Promise<void>[] = []
     await settle(range.start)
     for (let frame = 0; frame < totalFrames; frame++) {
-      if (signal?.aborted) throw new DOMException('הייצוא בוטל', 'AbortError')
+      if (signal?.aborted) throw new DOMException(t('error.exportCancelled'), 'AbortError')
       const time = range.start + frame / preset.fps
       await paintAt(time)
       const encoded = mux.videoSource.add(frame / preset.fps, 1 / preset.fps)
@@ -402,7 +403,7 @@ export async function exportProject(
         const speed = realtimeFactor((frame + 1) / preset.fps, (performance.now() - encodeStarted) / 1000)
         onProgress({
           ratio: 0.15 + 0.8 * ((frame + 1) / totalFrames),
-          label: `מרנדר פריים ${frame + 1} מתוך ${totalFrames} · ${formatRealtime(speed)} זמן אמת`,
+          label: t('error.frame', { current: frame + 1, total: totalFrames, speed: formatRealtime(speed) }),
           speed,
         })
         await new Promise((resolve) => setTimeout(resolve, 0))
@@ -411,15 +412,15 @@ export async function exportProject(
     while (encodes.length) await encodes.shift()
 
     mux.videoSource.close()
-    onProgress({ ratio: 0.97, label: 'סוגר את קובץ ה-MP4', speed: realtimeFactor(timelineDuration, (performance.now() - encodeStarted) / 1000) })
+    onProgress({ ratio: 0.97, label: t('error.muxClose'), speed: realtimeFactor(timelineDuration, (performance.now() - encodeStarted) / 1000) })
     await mux.output.finalize()
     const speed = realtimeFactor(timelineDuration, (performance.now() - encodeStarted) / 1000)
     if (streaming) {
-      onProgress({ ratio: 1, label: 'הקובץ נשמר', speed })
+      onProgress({ ratio: 1, label: t('error.saved'), speed })
       return { mode: 'file', blob: null }
     }
-    if (!(mux.target instanceof BufferTarget) || !mux.target.buffer) throw new Error('הייצוא הסתיים בלי נתונים')
-    onProgress({ ratio: 1, label: `הקובץ מוכן · ${formatRealtime(speed)} זמן אמת`, speed })
+    if (!(mux.target instanceof BufferTarget) || !mux.target.buffer) throw new Error(t('error.noData'))
+    onProgress({ ratio: 1, label: t('error.ready', { speed: formatRealtime(speed) }), speed })
     return { mode: 'download', blob: new Blob([mux.target.buffer], { type: 'video/mp4' }) }
   } catch (error) {
     try {
@@ -457,6 +458,6 @@ function createExportSurface(width: number, height: number, legacy: boolean): {
   canvas.style.top = '0'
   document.body.appendChild(canvas)
   const ctx = canvas.getContext('2d', { alpha: false })
-  if (!ctx) throw new Error('לא ניתן לפתוח משטח ציור לייצוא')
+  if (!ctx) throw new Error(t('error.noCanvas'))
   return { canvas, ctx, release: () => canvas.remove() }
 }

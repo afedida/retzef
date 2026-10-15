@@ -1,4 +1,5 @@
 import { letterboxThickness, progressBarRect, progressFraction } from '@/lib/creator'
+import { getLanguage, t } from '@/lib/i18n'
 import { fadeEnvelope, trackShown, videoLayers } from '@/lib/edit'
 import { gradeImage } from '@/lib/grade'
 import { sampleLane } from '@/lib/keyframes'
@@ -119,8 +120,8 @@ function drawVisual(
     ctx.font = `600 ${Math.max(18, dest.h / 18)}px Heebo, Arial, sans-serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    ctx.direction = 'rtl'
-    ctx.fillText('מדיה חסרה', dest.x + dest.w / 2, dest.y + dest.h / 2)
+    ctx.direction = getLanguage() === 'en' ? 'ltr' : 'rtl'
+    ctx.fillText(t('content.missingMedia'), dest.x + dest.w / 2, dest.y + dest.h / 2)
     return
   }
   if (visual.status !== 'ready') return

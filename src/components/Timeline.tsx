@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Eye, EyeOff, Flag, Headphones, Lock, Magnet, Minus, Plus, Scissors, Trash2, Unlock, VolumeX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { clipEnd, projectDuration } from '@/lib/edit'
+import { displayTrackName, type MessageKey } from '@/lib/i18n'
 import { formatClock } from '@/lib/time'
 import {
   createTextTrack,
@@ -29,16 +30,16 @@ import {
   splitAtPlayhead,
   subscribeFrames,
 } from '@/state/editor'
-import { useEditor } from '@/state/hooks'
+import { useEditor, useT } from '@/state/hooks'
 import { cn } from '@/lib/utils'
 import type { Asset, Clip, KeyLane, Track } from '@/types'
 
-const LANES: { id: KeyLane; label: string }[] = [
-  { id: 'volume', label: 'עוצמה' },
-  { id: 'opacity', label: 'שקיפות' },
-  { id: 'scale', label: 'זום' },
-  { id: 'x', label: 'אופקי' },
-  { id: 'y', label: 'אנכי' },
+const LANES: { id: KeyLane; label: MessageKey }[] = [
+  { id: 'volume', label: 'timeline.volume' },
+  { id: 'opacity', label: 'timeline.opacity' },
+  { id: 'scale', label: 'timeline.scale' },
+  { id: 'x', label: 'timeline.x' },
+  { id: 'y', label: 'timeline.y' },
 ]
 
 const RULER = 28
@@ -67,6 +68,7 @@ function slicePeaks(asset: Asset, clip: Clip): number[] {
 }
 
 export function Timeline() {
+  const t = useT()
   const project = useEditor((state) => state.project)
   const assets = useEditor((state) => state.assets)
   const selectedClipId = useEditor((state) => state.selectedClipId)
@@ -137,22 +139,22 @@ export function Timeline() {
       <div className="flex h-10 shrink-0 items-center gap-1 border-b px-2">
         <Button type="button" size="sm" variant="secondary" onClick={splitAtPlayhead}>
           <Scissors />
-          פיצול
+          {t('timeline.split')}
         </Button>
         <Button type="button" size="sm" variant="ghost" disabled={!selectedClipId} onClick={removeSelectedClip}>
           <Trash2 />
-          מחיקה
+          {t('timeline.delete')}
         </Button>
         <Button type="button" size="sm" variant="ghost" disabled={!selectedClipId} onClick={rippleSelectedClip}>
-          מחיקה גולשת
+          {t('timeline.ripple')}
         </Button>
         <Button type="button" size="sm" variant="ghost" onClick={placeMarker}>
           <Flag />
-          סמן
+          {t('timeline.marker')}
         </Button>
         <Button type="button" size="sm" variant={snap ? 'secondary' : 'ghost'} onClick={() => setSnap(!snap)} aria-pressed={snap}>
           <Magnet />
-          הצמדה
+          {t('timeline.snap')}
         </Button>
         <Button
           type="button"
@@ -161,28 +163,28 @@ export function Timeline() {
           aria-pressed={project.ripple}
           onClick={() => toggleRipple(!project.ripple)}
         >
-          גלישה
+          {t('timeline.rippleMode')}
         </Button>
         <select
-          aria-label="ערוץ נקודות"
+          aria-label={t('timeline.lane')}
           className="h-8 rounded-md border bg-transparent px-2 text-xs"
           value={lane}
           onChange={(event) => setLane(event.target.value as KeyLane)}
         >
           {LANES.map((item) => (
             <option key={item.id} value={item.id}>
-              {item.label}
+              {t(item.label)}
             </option>
           ))}
         </select>
         <div className="ms-auto flex items-center gap-1">
-          <Button type="button" size="icon-sm" variant="ghost" aria-label="התרחקות" onClick={() => setPps(pps / 1.2)}>
+          <Button type="button" size="icon-sm" variant="ghost" aria-label={t('timeline.zoomOut')} onClick={() => setPps(pps / 1.2)}>
             <Minus />
           </Button>
           <span dir="ltr" className="w-14 text-center font-mono text-[11px] text-muted-foreground">
             {Math.round(pps)} px/s
           </span>
-          <Button type="button" size="icon-sm" variant="ghost" aria-label="התקרבות" onClick={() => setPps(pps * 1.2)}>
+          <Button type="button" size="icon-sm" variant="ghost" aria-label={t('timeline.zoomIn')} onClick={() => setPps(pps * 1.2)}>
             <Plus />
           </Button>
         </div>
@@ -194,21 +196,21 @@ export function Timeline() {
             <div key={track.id} style={{ height: rowHeight(track) }} className="flex flex-col justify-center gap-0.5 border-b px-1 text-[11px] text-muted-foreground">
               <div className="flex items-center gap-0.5">
                 <span className={cn('size-1.5 shrink-0 rounded-full', swatch(track))} />
-                <span className="min-w-0 flex-1 truncate">{track.name}</span>
-                <TrackToggle label={track.locked ? 'פתיחת מסלול' : 'נעילת מסלול'} pressed={track.locked} onClick={() => toggleTrackFlag(track.id, 'locked', !track.locked)}>
+                <span className="min-w-0 flex-1 truncate">{displayTrackName(track.id, track.name)}</span>
+                <TrackToggle label={track.locked ? t('timeline.unlock') : t('timeline.lock')} pressed={track.locked} onClick={() => toggleTrackFlag(track.id, 'locked', !track.locked)}>
                   {track.locked ? <Lock className="size-3" /> : <Unlock className="size-3" />}
                 </TrackToggle>
-                <TrackToggle label={track.muted ? 'ביטול השתקה' : 'השתקת מסלול'} pressed={track.muted} onClick={() => toggleTrackFlag(track.id, 'muted', !track.muted)}>
+                <TrackToggle label={track.muted ? t('timeline.unmute') : t('timeline.mute')} pressed={track.muted} onClick={() => toggleTrackFlag(track.id, 'muted', !track.muted)}>
                   <VolumeX className="size-3" />
                 </TrackToggle>
-                <TrackToggle label={track.solo ? 'ביטול סולו' : 'סולו'} pressed={track.solo} onClick={() => toggleTrackFlag(track.id, 'solo', !track.solo)}>
+                <TrackToggle label={track.solo ? t('timeline.unsolo') : t('timeline.solo')} pressed={track.solo} onClick={() => toggleTrackFlag(track.id, 'solo', !track.solo)}>
                   <Headphones className="size-3" />
                 </TrackToggle>
-                <TrackToggle label={track.hidden ? 'הצגת מסלול' : 'הסתרת מסלול'} pressed={track.hidden} onClick={() => toggleTrackFlag(track.id, 'hidden', !track.hidden)}>
+                <TrackToggle label={track.hidden ? t('timeline.show') : t('timeline.hide')} pressed={track.hidden} onClick={() => toggleTrackFlag(track.id, 'hidden', !track.hidden)}>
                   {track.hidden ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
                 </TrackToggle>
                 {track.type === 'text' && project.tracks.filter((item) => item.type === 'text').length > 1 && (
-                  <button type="button" className="text-xs" aria-label={`הסרת ${track.name}`} onClick={() => deleteTextTrack(track.id)}>
+                  <button type="button" className="text-xs" aria-label={t('timeline.removeTrack', { name: displayTrackName(track.id, track.name) })} onClick={() => deleteTextTrack(track.id)}>
                     ×
                   </button>
                 )}
@@ -218,7 +220,7 @@ export function Timeline() {
                   type="range"
                   min={0}
                   max={100}
-                  aria-label={`עוצמת ${track.name}`}
+                  aria-label={t('timeline.trackVolume', { name: displayTrackName(track.id, track.name) })}
                   value={Math.round((track.volume ?? 1) * 100)}
                   onChange={(event) => liveTrackVolume(track.id, Number(event.target.value) / 100)}
                   onPointerUp={() => endGesture()}
@@ -230,7 +232,7 @@ export function Timeline() {
             </div>
           ))}
           <button type="button" className="w-full px-2 py-1 text-start text-[11px] text-primary" onClick={createTextTrack}>
-            + מסלול טקסט
+            {t('timeline.addText')}
           </button>
         </div>
         <div ref={scrollerRef} dir="ltr" className="min-w-0 flex-1 overflow-auto">
@@ -241,10 +243,10 @@ export function Timeline() {
                 <span key={beat} className="pointer-events-none absolute bottom-0 z-10 h-2 w-px bg-[#0078d4]" style={{ left: beat * pps }} />
               ))}
               {project.markIn != null && (
-                <span className="pointer-events-none absolute inset-y-0 z-30 w-0.5 bg-[#50e6ff]" style={{ left: project.markIn * pps }} title="כניסה" />
+                <span className="pointer-events-none absolute inset-y-0 z-30 w-0.5 bg-[#50e6ff]" style={{ left: project.markIn * pps }} title={t('timeline.in')} />
               )}
               {project.markOut != null && (
-                <span className="pointer-events-none absolute inset-y-0 z-30 w-0.5 bg-[#ffb900]" style={{ left: project.markOut * pps }} title="יציאה" />
+                <span className="pointer-events-none absolute inset-y-0 z-30 w-0.5 bg-[#ffb900]" style={{ left: project.markOut * pps }} title={t('timeline.out')} />
               )}
               {project.markers.map((marker) => (
                 <button
@@ -340,22 +342,22 @@ export function Timeline() {
             </div>
             {project.clips.length === 0 && (
               <div className="pointer-events-none absolute top-12 left-4 text-xs text-muted-foreground">
-                גררו מדיה לכאן. הציר נע משמאל לימין.
+                {t('timeline.empty')}
               </div>
             )}
           </div>
         </div>
       </div>
       <div className="flex h-7 shrink-0 items-center gap-3 border-t px-3 text-[11px] text-muted-foreground">
-        <span>רווח ניגון</span>
-        <span>S פיצול</span>
-        <span>Delete מחיקה</span>
-        <span>Shift+Delete גלישה</span>
-        <span>חצים הזזת קליפ</span>
-        <span>M סמן</span>
+        <span>{t('timeline.space')}</span>
+        <span>{t('timeline.keySplit')}</span>
+        <span>{t('timeline.keyDelete')}</span>
+        <span>{t('timeline.keyRipple')}</span>
+        <span>{t('timeline.keyArrows')}</span>
+        <span>{t('timeline.keyMarker')}</span>
         <span>Ctrl+C/V</span>
         {status && <span className="text-[#50e6ff]">{status}</span>}
-        <span className="ms-auto">Ctrl+גלגלת לזום</span>
+        <span className="ms-auto">{t('timeline.wheel')}</span>
       </div>
     </section>
   )
@@ -430,11 +432,12 @@ function ClipBlock({
   lane: KeyLane
   asset: Asset | null
 }) {
+  const t = useT()
   const label = clip.children?.length
-    ? 'מקונן'
+    ? t('timeline.nested')
     : clip.adjustment
-      ? 'התאמה'
-      : clip.text?.content.replaceAll('\n', ' ') || asset?.name || 'מדיה חסרה'
+      ? t('timeline.adjustment')
+      : clip.text?.content.replaceAll('\n', ' ') || asset?.name || t('timeline.missing')
   const peaks = asset ? slicePeaks(asset, clip) : []
   const color =
     track.type === 'video' ? 'bg-[#0e639c]' : track.type === 'text' ? 'bg-[#5c2e91]' : 'bg-[#0e7a6b]'
@@ -499,7 +502,7 @@ function ClipBlock({
         <p className="truncate text-[11px] font-medium">
           {label}
           {clip.speed !== 1 ? ` · ${clip.speed.toFixed(2)}x` : ''}
-          {clip.transition ? ' · מעבר' : ''}
+          {clip.transition ? t('timeline.transition') : ''}
         </p>
         {peaks.length > 0 && (
           <svg viewBox={`0 0 ${peaks.length} 32`} preserveAspectRatio="none" className="absolute inset-x-1 bottom-1 h-5 opacity-70">
@@ -517,7 +520,7 @@ function ClipBlock({
           <button
             key={`${key.time}:${key.value}`}
             type="button"
-            aria-label="נקודת מפתח"
+            aria-label={t('timeline.keyframe')}
             className="absolute z-20 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white bg-[#50e6ff]"
             style={{ left: `${key.time * 100}%`, top: `${(1 - (lane === 'scale' ? (key.value - 1) / 3 : key.value)) * 100}%` }}
             onPointerDown={(event) => {

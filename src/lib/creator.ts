@@ -1,4 +1,5 @@
 import { clipEnd, clampSpeed, freshClip, insertClip, projectDuration, updateClip } from '@/lib/edit'
+import { t } from '@/lib/i18n'
 import type { Asset, CaptionAnchor, Clip, FrameBox, KenBurns, Project, Rotation } from '@/types'
 
 export const END_SCREEN_SECONDS = 12
@@ -443,7 +444,7 @@ export function addEndScreen(project: Project): Project {
     start,
     duration,
     text: {
-      content: 'הירשמו',
+      content: t('content.subscribe'),
       fontSize: 68,
       color: '#ffffff',
       x: 0.27,
@@ -464,7 +465,7 @@ export function addEndScreen(project: Project): Project {
     start,
     duration,
     text: {
-      content: 'הסרטון הבא',
+      content: t('content.nextVideo'),
       fontSize: 48,
       color: '#ffffff',
       x: 0.73,

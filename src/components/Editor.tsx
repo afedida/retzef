@@ -11,20 +11,21 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { presetById } from '@/types'
 import { CreatorBar } from '@/components/CreatorBar'
-import { FolderDialog, ShortcutDialog, TemplateDialog } from '@/components/ProjectDialogs'
+import { FolderDialog, SettingsDialog, ShortcutDialog, TemplateDialog } from '@/components/ProjectDialogs'
 import { matchShortcut, type ShortcutId } from '@/lib/shortcuts'
 import { clearExportMarks, copySelection, deleteSelectedMarker, getState, groupSelection, importFiles, markInAtPlayhead, markOutAtPlayhead, nudgeSelectedClip, pasteSelection, placeMarker, redo, removeSelectedClip, rippleSelectedClip, saveActiveProject, seek, setPps, splitAtPlayhead, toggleLoop, togglePlay, undo, ungroupSelection } from '@/state/editor'
-import { useEditor } from '@/state/hooks'
+import { useEditor, useT } from '@/state/hooks'
+import type { MessageKey } from '@/lib/i18n'
 
 type PanelId = 'media' | 'inspect' | 'library' | 'transcript' | 'record' | 'history'
 
-const PANELS: { id: PanelId; label: string; icon: typeof Film }[] = [
-  { id: 'media', label: 'מדיה', icon: Film },
-  { id: 'inspect', label: 'מאפיינים', icon: SlidersHorizontal },
-  { id: 'library', label: 'כלים', icon: Clapperboard },
-  { id: 'transcript', label: 'תמלול', icon: Captions },
-  { id: 'record', label: 'הקלטה', icon: Mic },
-  { id: 'history', label: 'גרסאות', icon: History },
+const PANELS: { id: PanelId; label: MessageKey; icon: typeof Film }[] = [
+  { id: 'media', label: 'panel.media', icon: Film },
+  { id: 'inspect', label: 'panel.inspect', icon: SlidersHorizontal },
+  { id: 'library', label: 'panel.library', icon: Clapperboard },
+  { id: 'transcript', label: 'panel.transcript', icon: Captions },
+  { id: 'record', label: 'panel.record', icon: Mic },
+  { id: 'history', label: 'panel.history', icon: History },
 ]
 
 function SidePanel({ panel }: { panel: PanelId }) {
@@ -37,6 +38,7 @@ function SidePanel({ panel }: { panel: PanelId }) {
 }
 
 export function Editor() {
+  const t = useT()
   const ready = useEditor((state) => state.ready)
   const pps = useEditor((state) => state.pps)
   const shortcuts = useEditor((state) => state.shortcuts)
@@ -107,7 +109,7 @@ export function Editor() {
   }, [pps, shortcuts])
 
   if (!ready) {
-    return <div className="grid h-dvh place-items-center text-sm text-muted-foreground">טוען את הפרויקט…</div>
+    return <div className="grid h-dvh place-items-center text-sm text-muted-foreground">{t('panel.loading')}</div>
   }
 
   return (
@@ -116,8 +118,9 @@ export function Editor() {
       <FolderDialog />
       <TemplateDialog />
       <ShortcutDialog />
+      <SettingsDialog />
       <div className="flex min-h-0 flex-1">
-        <nav aria-label="לוחות" className="flex w-12 shrink-0 flex-col items-center gap-1 border-e bg-[#1e1e1e] py-2">
+        <nav aria-label={t('panel.nav')} className="flex w-12 shrink-0 flex-col items-center gap-1 border-e bg-[#1e1e1e] py-2">
           {PANELS.map((item) => {
             const Icon = item.icon
             const active = panel === item.id
@@ -125,9 +128,9 @@ export function Editor() {
               <button
                 key={item.id}
                 type="button"
-                aria-label={item.label}
+                aria-label={t(item.label)}
                 aria-pressed={active}
-                title={item.label}
+                title={t(item.label)}
                 className={cn(
                   'grid size-8 place-items-center rounded-md text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring',
                   active && 'bg-[#094771] text-white',
@@ -148,7 +151,7 @@ export function Editor() {
             <TabsList className="mx-2 mt-2 w-auto overflow-x-auto">
               {PANELS.map((item) => (
                 <TabsTrigger key={item.id} value={item.id}>
-                  {item.label}
+                  {t(item.label)}
                 </TabsTrigger>
               ))}
             </TabsList>

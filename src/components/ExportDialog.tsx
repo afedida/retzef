@@ -8,11 +8,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { exportWindow } from '@/lib/creator'
+import { presetLabel } from '@/lib/i18n'
 import { projectDuration } from '@/lib/edit'
 import { formatRealtime } from '@/lib/exportSpeed'
 import { formatClock } from '@/lib/time'
 import { beginExport, cancelExport, dismissExportResult, setExportOpen, setExportPreset } from '@/state/editor'
-import { useEditor } from '@/state/hooks'
+import { useEditor, useT } from '@/state/hooks'
 import { EXPORT_PRESETS, presetById } from '@/types'
 
 function formatBytes(bytes: number): string {
@@ -21,6 +22,7 @@ function formatBytes(bytes: number): string {
 }
 
 export function ExportDialog() {
+  const t = useT()
   const open = useEditor((state) => state.exportOpen)
   const project = useEditor((state) => state.project)
   const presetId = useEditor((state) => state.exportPreset)
@@ -41,14 +43,12 @@ export function ExportDialog() {
     <Dialog open={open} modal={false} onOpenChange={(next) => (next ? setExportOpen(true) : close())}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>ייצוא ליוטיוב</DialogTitle>
-          <DialogDescription>
-            MP4 עם H.264 ו-AAC. הקידוד מעדיף את כרטיס המסך, ואפשר להמשיך לערוך בזמן שהוא רץ. הקובץ הוא צילום של הפרויקט ברגע ההתחלה.
-          </DialogDescription>
+          <DialogTitle>{t('export.title')}</DialogTitle>
+          <DialogDescription>{t('export.description')}</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <label className="block space-y-1 text-xs">
-            <span className="text-muted-foreground">פורמט</span>
+            <span className="text-muted-foreground">{t('export.format')}</span>
             <select
               className="h-8 w-full rounded-md border bg-background px-2 text-sm"
               value={presetId}
@@ -57,22 +57,22 @@ export function ExportDialog() {
             >
               {EXPORT_PRESETS.map((item) => (
                 <option key={item.id} value={item.id}>
-                  {item.label} · {item.width}×{item.height}
+                  {presetLabel(item.id)} · {item.width}×{item.height}
                 </option>
               ))}
             </select>
           </label>
           <dl className="grid grid-cols-3 gap-2 text-xs">
             <div className="rounded-md bg-muted/60 px-2 py-1.5">
-              <dt className="text-muted-foreground">{range.ranged ? 'טווח ייצוא' : 'אורך'}</dt>
+              <dt className="text-muted-foreground">{range.ranged ? t('export.range') : t('export.length')}</dt>
               <dd dir="ltr" className="font-mono">{formatClock(duration)}{range.ranged ? ` / ${formatClock(timeline)}` : ''}</dd>
             </div>
             <div className="rounded-md bg-muted/60 px-2 py-1.5">
-              <dt className="text-muted-foreground">גודל משוער</dt>
+              <dt className="text-muted-foreground">{t('export.estimate')}</dt>
               <dd dir="ltr" className="font-mono">{formatBytes(estimate)}</dd>
             </div>
             <div className="rounded-md bg-muted/60 px-2 py-1.5">
-              <dt className="text-muted-foreground">מהירות</dt>
+              <dt className="text-muted-foreground">{t('export.speed')}</dt>
               <dd dir="ltr" className="font-mono">{formatRealtime(job?.speed ?? 0)}</dd>
             </div>
           </dl>
@@ -80,28 +80,28 @@ export function ExportDialog() {
             <div className="h-2 overflow-hidden rounded-full bg-muted">
               <div className="h-full bg-primary transition-[width]" style={{ width: `${Math.round((job?.ratio ?? 0) * 100)}%` }} />
             </div>
-            <p className="text-xs text-muted-foreground">{job?.label ?? 'מוכן לייצוא'}</p>
+            <p className="text-xs text-muted-foreground">{job?.label ?? t('export.ready')}</p>
           </div>
           {job?.error && <p className="text-sm text-destructive">{job.error}</p>}
-          {job?.savedToDisk && <p className="text-sm">הקובץ נשמר במיקום שבחרת.</p>}
+          {job?.savedToDisk && <p className="text-sm">{t('export.savedChosen')}</p>}
           {job?.resultUrl && (
             <div className="space-y-1">
               <video src={job.resultUrl} controls className="aspect-video w-full rounded-md bg-black" />
-              <p className="text-xs text-muted-foreground">הקובץ ירד ({formatBytes(job.resultSize)}). אפשר גם לנגן אותו כאן.</p>
+              <p className="text-xs text-muted-foreground">{t('export.downloaded', { size: formatBytes(job.resultSize) })}</p>
             </div>
           )}
         </div>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={close}>
-            {running ? 'המשך לערוך' : 'סגירה'}
+            {running ? t('export.keepEditing') : t('export.close')}
           </Button>
           {running ? (
             <Button type="button" variant="destructive" onClick={cancelExport}>
-              ביטול
+              {t('export.cancel')}
             </Button>
           ) : (
             <Button type="button" onClick={() => void beginExport()} disabled={duration <= 0}>
-              התחלת ייצוא
+              {t('export.start')}
             </Button>
           )}
         </DialogFooter>

@@ -1,4 +1,5 @@
 import { letterboxThickness, progressBarRect, progressFraction } from '@/lib/creator'
+import { t } from '@/lib/i18n'
 import { videoLayers } from '@/lib/edit'
 import { containRect } from '@/lib/time'
 import type { Clip, FrameBox, KenBurns, Project } from '@/types'
@@ -28,9 +29,9 @@ export function formatRealtime(factor: number): string {
 }
 
 export function accelerationLabel(acceleration: Acceleration): string {
-  if (acceleration === 'prefer-hardware') return 'מקודד חומרה'
-  if (acceleration === 'prefer-software') return 'מקודד תוכנה'
-  return 'מקודד ברירת מחדל'
+  if (acceleration === 'prefer-hardware') return t('accel.hardware')
+  if (acceleration === 'prefer-software') return t('accel.software')
+  return t('accel.default')
 }
 
 function identityKen(ken: KenBurns): boolean {

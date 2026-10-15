@@ -1,4 +1,5 @@
 import { loadAudioBuffer, peakEnvelope, forgetAudio } from '@/lib/audio'
+import { getLanguage, setI18nLanguage, t, type Language } from '@/lib/i18n'
 import { detectBeats } from '@/lib/beats'
 import { transcribePcm } from '@/lib/captions'
 import { youtubeChapters } from '@/lib/chapters'
@@ -141,6 +142,8 @@ export type EditorState = {
   recentFolders: { id: string; name: string; savedAt: number }[]
   templates: UserTemplate[]
   shortcuts: Bindings
+  language: Language
+  settingsOpen: boolean
 }
 
 export type ExportJob = {
@@ -198,6 +201,8 @@ const state: EditorState = {
   recentFolders: [],
   templates: [],
   shortcuts: cloneBindings(DEFAULT_SHORTCUTS),
+  language: getLanguage(),
+  settingsOpen: false,
 }
 
 const listeners = new Set<() => void>()
@@ -441,7 +446,7 @@ export function liveTrackVolume(trackId: string, volume: number) {
 export function placeMic(assetId: string, time: number) {
   const voice =
     state.project.tracks.find((track) => track.type === 'audio' && track.id === 'a1') ??
-    state.project.tracks.find((track) => track.type === 'audio' && track.name === 'קריינות')
+    state.project.tracks.find((track) => track.type === 'audio' && (track.name === 'קריינות' || track.name === 'Voiceover'))
   placeAsset(assetId, time, voice?.id ?? 'a1')
 }
 
@@ -526,7 +531,7 @@ export function patchClip(clipId: string, patch: Partial<Clip>) {
 export function copySelection() {
   const ids = new Set(selectionIds())
   clipboard = state.project.clips.filter((clip) => ids.has(clip.id)).map((clip) => structuredClone(clip))
-  state.status = clipboard.length ? `הועתקו ${clipboard.length} קליפים` : null
+  state.status = clipboard.length ? t('status.copied', { count: clipboard.length }) : null
   emit()
 }
 
@@ -599,7 +604,7 @@ export function applyTemplate(kind: 'lower' | 'intro' | 'outro' | 'rect' | 'elli
 export function importLutText(name: string, text: string) {
   const lut = parseCube(text, name.replace(/\.cube$/i, ''))
   if (!lut) {
-    state.status = 'קובץ ה-LUT לא נקרא'
+    state.status = t('status.lutBad')
     emit()
     return
   }
@@ -609,7 +614,7 @@ export function importLutText(name: string, text: string) {
     if (!clipId) return withLut
     return updateClip(withLut, clipId, { lutId: lut.id })
   })
-  state.status = `LUT ${lut.name} נוסף`
+  state.status = t('status.lutAdded', { name: lut.name })
   emit()
 }
 
@@ -622,7 +627,7 @@ export function assignLut(lutId: string | null) {
 export function importSrtText(text: string) {
   const cues = parseSrt(text)
   if (!cues.length) {
-    state.status = 'קובץ ה-SRT ריק'
+    state.status = t('status.srtEmpty')
     emit()
     return
   }
@@ -638,7 +643,7 @@ export function importSrtText(text: string) {
     }
     return next
   })
-  state.status = `יובאו ${cues.length} כתוביות`
+  state.status = t('status.srtImported', { count: cues.length })
   emit()
 }
 
@@ -660,15 +665,15 @@ export function exportSrtFile() {
 export async function transcribeSelected() {
   const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
   if (!clip?.assetId) {
-    state.status = 'בחרו קליפ עם שמע'
+    state.status = t('status.pickAudio')
     emit()
     return
   }
-  state.status = 'מכין שמע לתמלול…'
+  state.status = t('status.prepareAudio')
   emit()
   const buffer = await loadAudioBuffer(clip.assetId)
   if (!buffer) {
-    state.status = 'אין שמע בקליפ'
+    state.status = t('status.noAudio')
     emit()
     return
   }
@@ -677,12 +682,12 @@ export async function transcribeSelected() {
   const length = Math.max(1, Math.round(clip.duration * speed * buffer.sampleRate))
   const channel = buffer.getChannelData(0)
   const slice = channel.slice(offset, Math.min(channel.length, offset + length))
-  state.status = 'מוריד מודל וממלל…'
+  state.status = t('status.transcribing')
   emit()
   try {
     const cues = await transcribePcm(slice, buffer.sampleRate, state.captionLanguage)
     if (!cues.length) {
-      state.status = 'לא זוהה דיבור'
+      state.status = t('status.noSpeech')
       emit()
       return
     }
@@ -698,10 +703,10 @@ export async function transcribeSelected() {
       }
       return next
     })
-    state.status = `נוספו ${cues.length} כתוביות`
+    state.status = t('status.captionsAdded', { count: cues.length })
     emit()
   } catch (error) {
-    state.status = error instanceof Error ? error.message : 'התמלול נכשל'
+    state.status = error instanceof Error ? error.message : t('status.transcribeFailed')
     emit()
   }
 }
@@ -709,13 +714,13 @@ export async function transcribeSelected() {
 export async function jumpCutSelected() {
   const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
   if (!clip?.assetId) {
-    state.status = 'בחרו קליפ עם שמע'
+    state.status = t('status.pickAudio')
     emit()
     return
   }
   const buffer = await loadAudioBuffer(clip.assetId)
   if (!buffer) {
-    state.status = 'אין שמע לזיהוי שתיקה'
+    state.status = t('status.noSilenceAudio')
     emit()
     return
   }
@@ -726,13 +731,13 @@ export async function jumpCutSelected() {
   const slice = channel.subarray(offset, Math.min(channel.length, offset + length))
   const gaps = silentGaps(slice, buffer.sampleRate)
   if (!gaps.length) {
-    state.status = 'לא נמצאו שתיקות'
+    state.status = t('status.noSilence')
     emit()
     return
   }
   const ranges = gaps.map((gap) => ({ start: gap.start / speed, end: gap.end / speed }))
   commit((project) => exciseLocalRanges(project, clip.id, ranges))
-  state.status = `הוסרו ${gaps.length} קטעי שתיקה`
+  state.status = t('status.silenceRemoved', { count: gaps.length })
   emit()
 }
 
@@ -764,7 +769,7 @@ export async function rememberVersion(manual = false) {
   }
   state.versions = [next, ...versions].slice(0, 12)
   await saveVersions(state.versions)
-  if (manual) state.status = 'גרסה נשמרה'
+  if (manual) state.status = t('status.versionSaved')
   emit()
 }
 
@@ -774,13 +779,13 @@ export function restoreVersion(id: string) {
   const project = coerceProject(structuredClone(version.project))
   if (!project) return
   commit(() => project)
-  state.status = 'שוחזרה גרסה'
+  state.status = t('status.versionRestored')
   emit()
 }
 
 export function setTrackArmed(armed: boolean) {
   state.trackArmed = armed
-  state.status = armed ? 'לחצו על התצוגה כדי לעקוב אחרי נקודה' : null
+  state.status = armed ? t('status.trackHint') : null
   emit()
 }
 
@@ -791,17 +796,17 @@ function note(message: string) {
 
 export function markInAtPlayhead() {
   commit((project) => setMark(project, 'in', playhead))
-  note('נקודת כניסה')
+  note(t('status.markIn'))
 }
 
 export function markOutAtPlayhead() {
   commit((project) => setMark(project, 'out', playhead))
-  note('נקודת יציאה')
+  note(t('status.markOut'))
 }
 
 export function clearExportMarks() {
   commit((project) => clearMarks(project))
-  note('הטווח נוקה')
+  note(t('status.rangeCleared'))
 }
 
 export function toggleLoop(loop: boolean) {
@@ -838,53 +843,53 @@ export function toggleLetterbox(enabled: boolean) {
 
 export function insertEndScreen() {
   commit((project) => addEndScreen(project))
-  note('נוסף מסך סיום של 12 שניות')
+  note(t('status.endScreen'))
 }
 
 export function jumpZoomTrack() {
   const before = state.project.clips.filter((clip) => clip.trackId === 'v1' && clip.assetId && !clip.text).length
   if (!before) {
-    note('אין קליפים במסלול וידאו 1')
+    note(t('status.noVideo1'))
     return
   }
   commit((project) => applyJumpZoom(project, 'v1'))
-  note('זום מתחלף על הג׳אמפ קאטים')
+  note(t('status.jumpZoom'))
 }
 
 export function fitMusicBed() {
   const bed = state.project.clips.find((clip) => clip.trackId === 'a2')
   if (!bed) {
-    note('אין קליפ במסלול המוזיקה')
+    note(t('status.noMusic'))
     return
   }
   commit((project) => fitMusic(project, assetOf(bed.assetId)))
-  note('המוזיקה הותאמה לאורך הווידאו')
+  note(t('status.musicFit'))
 }
 
 export function splitSelection(orientation: 'horizontal' | 'vertical') {
   const ids = selectedIds()
   if (ids.length < 2) {
-    note('בחרו שני קליפים לפיצול מסך')
+    note(t('status.pickTwo'))
     return
   }
   commit((project) => applySplit(project, ids, orientation))
-  note(orientation === 'vertical' ? 'מסך מפוצל למעלה ולמטה' : 'מסך מפוצל לשניים')
+  note(orientation === 'vertical' ? t('status.splitVertical') : t('status.splitHorizontal'))
 }
 
 export function detachSelectedAudio() {
   const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
   if (!clip) {
-    note('בחרו קליפ וידאו עם שמע')
+    note(t('status.pickVideoAudio'))
     return
   }
   const asset = assetOf(clip.assetId)
   const next = detachAudio(state.project, clip.id, asset)
   if (next === state.project) {
-    note('אפשר להפריד רק שמע מתוך קליפ וידאו')
+    note(t('status.detachVideoOnly'))
     return
   }
   commit(() => next)
-  note('השמע הופרד למסלול הקריינות')
+  note(t('status.detached'))
 }
 
 export function jCutSelected() {
@@ -892,11 +897,11 @@ export function jCutSelected() {
   if (!clip) return
   const next = jCut(state.project, clip.id, assetOf(clip.assetId))
   if (next === state.project) {
-    note('ג׳י-קאט צריך שמע ומקור לפני נקודת הכניסה')
+    note(t('status.jcutNeed'))
     return
   }
   commit(() => next)
-  note('ג׳י-קאט: השמע מקדים את התמונה')
+  note(t('status.jcutDone'))
 }
 
 export function lCutSelected() {
@@ -904,21 +909,21 @@ export function lCutSelected() {
   if (!clip) return
   const next = lCut(state.project, clip.id, assetOf(clip.assetId))
   if (next === state.project) {
-    note('אל-קאט צריך שמע שנשאר אחרי סוף הקליפ')
+    note(t('status.lcutNeed'))
     return
   }
   commit(() => next)
-  note('אל-קאט: הקול ממשיך אחרי החיתוך')
+  note(t('status.lcutDone'))
 }
 
 export function copyAttributes() {
   const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
   if (!clip) {
-    note('בחרו קליפ להעתקת מאפיינים')
+    note(t('status.pickCopy'))
     return
   }
   state.attributeClip = pickAttributes(clip)
-  note('המאפיינים הועתקו')
+  note(t('status.copiedAttr'))
   emit()
 }
 
@@ -926,17 +931,17 @@ export function pasteAttributes() {
   const attributes = state.attributeClip
   const ids = selectedIds()
   if (!attributes || !ids.length) {
-    note('העתיקו מאפיינים ואז בחרו קליפים')
+    note(t('status.pasteNeed'))
     return
   }
   commit((project) => applyAttributes(project, ids, attributes))
-  note('המאפיינים הודבקו')
+  note(t('status.pastedAttr'))
 }
 
 export function anchorCaption(anchor: CaptionAnchor) {
   const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
   if (!clip?.text) {
-    note('בחרו כתוביות')
+    note(t('status.pickCaptions'))
     return
   }
   commit((project) => placeCaption(project, clip.id, anchor))
@@ -958,7 +963,7 @@ export function applyLook(id: string) {
   const look = LOOKS.find((item) => item.id === id)
   const ids = selectedIds()
   if (!look || !ids.length) {
-    state.status = 'בחרו קליפ למראה'
+    state.status = t('status.pickLook')
     emit()
     return
   }
@@ -978,14 +983,14 @@ export function reframeShorts() {
       project,
     ),
   )
-  state.status = 'הקנבס עבר ל־9:16 והפריים הוגדל'
+  state.status = t('status.portrait')
   emit()
 }
 
 export function toggleReverse() {
   const clip = state.project.clips.find((item) => item.id === state.selectedClipId)
   if (!clip?.assetId) {
-    state.status = 'בחרו קליפ מדיה להיפוך'
+    state.status = t('status.pickMediaReverse')
     emit()
     return
   }
@@ -1019,7 +1024,7 @@ export function setCaptionStyle(style: 'plain' | 'karaoke' | 'pop') {
   const picked = selectedIds().filter((id) => textIds.includes(id))
   const ids = picked.length ? picked : textIds
   if (!ids.length) {
-    state.status = 'אין כתוביות לעדכון'
+    state.status = t('status.noCaptions')
     emit()
     return
   }
@@ -1033,7 +1038,7 @@ export function setCaptionStyle(style: 'plain' | 'karaoke' | 'pop') {
       })
     }, project),
   )
-  state.status = style === 'karaoke' ? 'סגנון קריוקי' : style === 'pop' ? 'סגנון פופ' : 'כתוביות רגילות'
+  state.status = style === 'karaoke' ? t('status.karaoke') : style === 'pop' ? t('status.pop') : t('status.plain')
   emit()
 }
 
@@ -1041,7 +1046,7 @@ export function nestSelection() {
   const ids = selectedIds()
   const before = state.project.clips.length
   commit((project) => nestClips(project, ids))
-  if (state.project.clips.length === before) state.status = 'בחרו שני קליפים באותו מסלול'
+  if (state.project.clips.length === before) state.status = t('status.sameTrack')
   emit()
 }
 
@@ -1065,13 +1070,13 @@ export function downloadChapters() {
 export async function markBeats() {
   const clip = state.project.clips.find((item) => item.id === state.selectedClipId && item.assetId)
   if (!clip?.assetId) {
-    state.status = 'בחרו קליפ עם שמע'
+    state.status = t('status.pickAudio')
     emit()
     return
   }
   const buffer = await loadAudioBuffer(clip.assetId)
   if (!buffer) {
-    state.status = 'אין שמע לזיהוי פעימות'
+    state.status = t('status.noBeatAudio')
     emit()
     return
   }
@@ -1081,7 +1086,7 @@ export async function markBeats() {
   const channel = buffer.getChannelData(0).slice(offset, Math.min(buffer.length, offset + length))
   const beats = detectBeats(channel, buffer.sampleRate).map((time) => clip.start + time / speed)
   commit((project) => ({ ...project, beats }))
-  state.status = beats.length ? `סומנו ${beats.length} פעימות` : 'לא נמצאו פעימות'
+  state.status = beats.length ? t('status.beats', { count: beats.length }) : t('status.noBeats')
   emit()
 }
 
@@ -1096,7 +1101,7 @@ export function cutWord(clipId: string, index: number) {
 export function cutFillers() {
   const before = projectSignature(state.project)
   commit((project) => removeFillers(project))
-  state.status = projectSignature(state.project) === before ? 'לא נמצאו מילות מילוי' : 'מילות המילוי הוסרו'
+  state.status = projectSignature(state.project) === before ? t('status.noFillers') : t('status.fillersRemoved')
   emit()
 }
 
@@ -1112,11 +1117,11 @@ export function registerPreviewGrab(grab: () => Promise<Blob | null>): () => voi
 export async function freezeFrame() {
   const blob = await grabPng?.()
   if (!blob) {
-    state.status = 'אין פריים לתפיסה'
+    state.status = t('status.noFrame')
     emit()
     return
   }
-  const file = new File([blob], 'פריים.png', { type: 'image/png' })
+  const file = new File([blob], t('status.frameFile'), { type: 'image/png' })
   const created = await importFiles([file])
   const asset = created[0]
   if (!asset) return
@@ -1132,14 +1137,14 @@ export async function freezeFrame() {
     state.selectedClipId = placed
     state.selectedClipIds = [placed]
   }
-  state.status = 'פריים קפוא נוסף לציר'
+  state.status = t('status.freezeAdded')
   emit()
 }
 
 export function applyMotion(clipId: string, points: { time: number; x: number; y: number }[]) {
   commit((project) => setMotionKeys(project, clipId, points))
   state.trackArmed = false
-  state.status = 'מסלול הטקסט נשמר'
+  state.status = t('status.textTrackSaved')
   emit()
 }
 
@@ -1263,7 +1268,7 @@ export async function importFiles(files: File[]): Promise<Asset[]> {
       emit()
       void enrichAsset(asset.id)
     } catch (error) {
-      state.importError = error instanceof Error ? error.message : 'הייבוא נכשל'
+      state.importError = error instanceof Error ? error.message : t('status.importFailed')
       emit()
     }
   }
@@ -1297,14 +1302,14 @@ async function enrichAsset(id: string) {
 
 export async function loadSampleMedia(): Promise<void> {
   const samples: { url: string; name: string; type: string }[] = [
-    { url: '/samples/demo-video.mp4', name: 'סרטון-דוגמה.mp4', type: 'video/mp4' },
-    { url: '/samples/demo-music.mp3', name: 'מוזיקה-דוגמה.mp3', type: 'audio/mpeg' },
-    { url: '/samples/demo-still.png', name: 'תמונה-דוגמה.png', type: 'image/png' },
+    { url: '/samples/demo-video.mp4', name: t('content.sampleVideo'), type: 'video/mp4' },
+    { url: '/samples/demo-music.mp3', name: t('content.sampleMusic'), type: 'audio/mpeg' },
+    { url: '/samples/demo-still.png', name: t('content.sampleImage'), type: 'image/png' },
   ]
   const files: File[] = []
   for (const sample of samples) {
     const response = await fetch(sample.url)
-    if (!response.ok) throw new Error('לא הצלחתי לטעון את מדיית הדוגמה')
+    if (!response.ok) throw new Error(t('error.sampleLoad'))
     const blob = await response.blob()
     files.push(new File([blob], sample.name, { type: sample.type || blob.type }))
   }
@@ -1381,7 +1386,7 @@ export async function loadProjectPackage(file: File) {
     scheduleSave()
     emit()
   } catch (error) {
-    state.importError = error instanceof Error ? error.message : 'טעינת החבילה נכשלה'
+    state.importError = error instanceof Error ? error.message : t('status.packageFailed')
     emit()
   }
 }
@@ -1411,7 +1416,7 @@ export async function loadProjectFile(file: File) {
   try {
     const parsed = await readProjectFile(file)
     const project = coerceProject(parsed)
-    if (!project) throw new Error('קובץ הפרויקט לא תקין')
+    if (!project) throw new Error(t('error.badProject'))
     history.past.push(state.project)
     history.future = []
     state.project = project
@@ -1421,7 +1426,7 @@ export async function loadProjectFile(file: File) {
     scheduleSave()
     emit()
   } catch (error) {
-    state.importError = error instanceof Error ? error.message : 'טעינת הפרויקט נכשלה'
+    state.importError = error instanceof Error ? error.message : t('status.projectLoadFailed')
     emit()
   }
 }
@@ -1450,7 +1455,7 @@ async function boot() {
     state.assets = loaded
     if (project) state.project = project
   } catch (error) {
-    state.importError = error instanceof Error ? error.message : 'טעינת השמירה המקומית נכשלה'
+    state.importError = error instanceof Error ? error.message : t('status.localLoadFailed')
   }
   state.shortcuts = readShortcutSettings()
   state.ready = true
@@ -1516,11 +1521,11 @@ function installLoaded(project: Project, assets: { asset: Asset; blob: Blob }[],
 
 function noteFolderError(error: unknown, unsupported: string) {
   if (error instanceof DOMException && error.name === 'AbortError') {
-    state.status = 'בחירת התיקייה בוטלה'
+    state.status = t('status.folderCancelled')
   } else if (!directoryPickerSupported()) {
     state.status = unsupported
   } else {
-    state.status = error instanceof Error ? error.message : 'הפעולה על התיקייה נכשלה'
+    state.status = error instanceof Error ? error.message : t('status.folderFailed')
   }
   emit()
 }
@@ -1533,6 +1538,18 @@ export function setFolderOpen(open: boolean) {
 
 export function setTemplateOpen(open: boolean) {
   state.templateOpen = open
+  emit()
+}
+
+export function setLanguage(language: Language) {
+  setI18nLanguage(language)
+  state.language = getLanguage()
+  state.status = null
+  emit()
+}
+
+export function setSettingsOpen(open: boolean) {
+  state.settingsOpen = open
   emit()
 }
 
@@ -1554,9 +1571,9 @@ export async function saveActiveProject(): Promise<void> {
   }
   try {
     await autosaveLinkedFolder(state.project, state.assets, assetBlobs())
-    state.status = 'הפרויקט נשמר בתיקייה'
+    state.status = t('status.savedFolder')
   } catch (error) {
-    noteFolderError(error, 'הדפדפן לא תומך בשמירה לתיקייה. השמירה האוטומטית נשארת בדפדפן, ואפשר להוריד JSON או zip.')
+    noteFolderError(error, t('status.folderUnsupportedSave'))
   }
   emit()
 }
@@ -1565,11 +1582,11 @@ export async function saveProjectToFolder(): Promise<void> {
   try {
     const link = await chooseProjectFolder(state.project, state.assets, assetBlobs())
     state.folderName = link.name
-    state.status = `הפרויקט נשמר בתיקייה`
+    state.status = t('status.savedFolder')
     state.recentFolders = await listRecentFolders()
     emit()
   } catch (error) {
-    noteFolderError(error, 'הדפדפן לא תומך בשמירה לתיקייה. השמירה האוטומטית נשארת בדפדפן, ואפשר להוריד JSON או zip.')
+    noteFolderError(error, t('status.folderUnsupportedSave'))
   }
 }
 
@@ -1577,11 +1594,11 @@ export async function openFolderProject(): Promise<void> {
   try {
     const loaded = await openProjectFolder()
     state.folderName = loaded.link.name
-    installLoaded(loaded.project, loaded.assets, 'הפרויקט נפתח מהתיקייה')
+    installLoaded(loaded.project, loaded.assets, t('status.openedFolder'))
     state.recentFolders = await listRecentFolders()
     emit()
   } catch (error) {
-    noteFolderError(error, 'הדפדפן לא תומך בפתיחת תיקייה. אפשר לטעון JSON או zip.')
+    noteFolderError(error, t('status.folderUnsupportedOpen'))
   }
 }
 
@@ -1589,11 +1606,11 @@ export async function openRecentFolder(id: string): Promise<void> {
   try {
     const loaded = await reopenRecentFolder(id)
     state.folderName = loaded.link.name
-    installLoaded(loaded.project, loaded.assets, 'הפרויקט האחרון נפתח')
+    installLoaded(loaded.project, loaded.assets, t('status.openedRecent'))
     state.recentFolders = await listRecentFolders()
     emit()
   } catch (error) {
-    noteFolderError(error, 'הדפדפן לא תומך בפתיחת תיקייה. אפשר לטעון JSON או zip.')
+    noteFolderError(error, t('status.folderUnsupportedOpen'))
   }
 }
 
@@ -1605,13 +1622,13 @@ async function persistTemplates(templates: UserTemplate[]) {
 
 export async function saveCurrentTemplate(name: string, parts: TemplatePart[]): Promise<void> {
   if (!parts.length) {
-    state.status = 'בחרו לפחות חלק אחד לתבנית'
+    state.status = t('status.pickParts')
     emit()
     return
   }
   const template = captureTemplate({ name, project: state.project, preset: state.exportPreset, parts })
   await persistTemplates([template, ...state.templates].slice(0, 40))
-  state.status = `התבנית «${template.name}» נשמרה`
+  state.status = t('status.templateSaved', { name: template.name })
   emit()
 }
 
@@ -1621,7 +1638,7 @@ export async function renameStoredTemplate(id: string, name: string): Promise<vo
 
 export async function deleteStoredTemplate(id: string): Promise<void> {
   await persistTemplates(deleteTemplate(state.templates, id))
-  state.status = 'התבנית נמחקה'
+  state.status = t('status.templateDeleted')
   emit()
 }
 
@@ -1636,7 +1653,7 @@ export function applyStoredTemplate(id: string) {
   state.selectedClipId = null
   state.selectedClipIds = []
   if (created.preset) state.exportPreset = created.preset
-  state.status = 'נפתח פרויקט חדש מהתבנית. מדיה שלא נמצאת בספרייה תופיע כחסרה.'
+  state.status = t('status.templateProject')
   touchHistory()
   scheduleSave()
   emit()
@@ -1644,10 +1661,10 @@ export function applyStoredTemplate(id: string) {
 
 export function importTemplateText(text: string) {
   const template = parseTemplateDocument(JSON.parse(text) as unknown)
-  if (!template) throw new Error('קובץ התבנית לא תקין')
+  if (!template) throw new Error(t('error.badTemplate'))
   template.id = crypto.randomUUID()
   void persistTemplates([template, ...state.templates].slice(0, 40))
-  state.status = `התבנית «${template.name}» יובאה`
+  state.status = t('status.templateImported', { name: template.name })
   emit()
 }
 
@@ -1660,7 +1677,7 @@ export function applyShortcutBindings(bindings: Bindings) {
 
 export function resetShortcutBindings() {
   applyShortcutBindings(cloneBindings(DEFAULT_SHORTCUTS))
-  state.status = 'קיצורי ברירת המחדל הוחזרו'
+  state.status = t('status.shortcutsReset')
   emit()
 }
 
@@ -1668,7 +1685,7 @@ export function importShortcutText(text: string): boolean {
   const bindings = parseShortcutDocument(text)
   if (!bindings) return false
   applyShortcutBindings(bindings)
-  state.status = 'קיצורים יובאו'
+  state.status = t('status.shortcutsImported')
   emit()
   return true
 }
@@ -1700,7 +1717,7 @@ export async function beginExport(): Promise<void> {
   exportObjectUrl = null
   const controller = new AbortController()
   exportAbort = controller
-  state.exportJob = { running: true, ratio: 0, label: 'מוכן לייצוא', speed: 0, error: null, resultUrl: null, resultSize: 0, savedToDisk: false }
+  state.exportJob = { running: true, ratio: 0, label: t('status.exportReady'), speed: 0, error: null, resultUrl: null, resultSize: 0, savedToDisk: false }
   emit()
   const safe = project.name.replace(/[^\p{L}\p{N}\-_ ]+/gu, '').trim() || 'retzef'
   let stream: Awaited<ReturnType<typeof pickMp4Stream>> = null
@@ -1708,7 +1725,7 @@ export async function beginExport(): Promise<void> {
     stream = await pickMp4Stream(`${safe}.mp4`)
   } catch (caught) {
     if (caught instanceof DOMException && caught.name === 'AbortError') {
-      state.exportJob = { ...state.exportJob, running: false, label: 'הייצוא בוטל' }
+      state.exportJob = { ...state.exportJob, running: false, label: t('status.exportCancelled') }
       emit()
       return
     }
@@ -1736,7 +1753,7 @@ export async function beginExport(): Promise<void> {
       state.exportJob = {
         running: false,
         ratio: 1,
-        label: 'הקובץ מוכן',
+        label: t('status.fileReady'),
         speed: state.exportJob?.speed ?? 0,
         error: null,
         resultUrl: exportObjectUrl,
@@ -1747,7 +1764,7 @@ export async function beginExport(): Promise<void> {
       state.exportJob = {
         running: false,
         ratio: 1,
-        label: 'הקובץ נשמר',
+        label: t('status.fileSaved'),
         speed: state.exportJob?.speed ?? 0,
         error: null,
         resultUrl: null,
@@ -1761,8 +1778,8 @@ export async function beginExport(): Promise<void> {
     state.exportJob = {
       ...state.exportJob,
       running: false,
-      error: aborted ? 'הייצוא בוטל' : caught instanceof Error ? caught.message : 'הייצוא נכשל',
-      label: aborted ? 'הייצוא בוטל' : state.exportJob.label,
+      error: aborted ? t('status.exportCancelled') : caught instanceof Error ? caught.message : t('status.exportFailed'),
+      label: aborted ? t('status.exportCancelled') : state.exportJob.label,
     }
   } finally {
     if (exportAbort === controller) exportAbort = null

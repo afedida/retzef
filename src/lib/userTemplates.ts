@@ -1,4 +1,5 @@
 import { blankProject, clipEnd, coerceProject, projectDuration } from '@/lib/edit'
+import { t } from '@/lib/i18n'
 import type { Clip, ExportPresetId, Project, TextStyle, Track } from '@/types'
 
 export const TEMPLATE_PARTS = ['project', 'intro', 'outro', 'logo', 'captionStyle', 'tracks', 'preset'] as const
@@ -91,7 +92,7 @@ export function captureTemplate(input: {
   const wants = (part: TemplatePart) => parts.includes(part)
   return {
     id: input.id ?? crypto.randomUUID(),
-    name: input.name.trim() || 'תבנית',
+    name: input.name.trim() || t('template.fallbackName'),
     savedAt: input.savedAt ?? Date.now(),
     parts,
     preset: wants('preset') || wants('project') ? input.preset : null,

@@ -4,14 +4,14 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { formatClock } from '@/lib/time'
 import { getPlayhead, importFiles, loadSampleMedia, placeAsset, removeAsset } from '@/state/editor'
-import { useEditor } from '@/state/hooks'
+import { useEditor, useT } from '@/state/hooks'
 import { cn } from '@/lib/utils'
 import type { Asset, MediaKind } from '@/types'
 
-function kindLabel(kind: MediaKind): string {
-  if (kind === 'video') return 'וידאו'
-  if (kind === 'audio') return 'שמע'
-  return 'תמונה'
+function kindLabel(kind: MediaKind, label: (key: 'media.video' | 'media.audio' | 'media.image') => string): string {
+  if (kind === 'video') return label('media.video')
+  if (kind === 'audio') return label('media.audio')
+  return label('media.image')
 }
 
 function KindIcon({ kind }: { kind: MediaKind }) {
@@ -21,6 +21,7 @@ function KindIcon({ kind }: { kind: MediaKind }) {
 }
 
 export function MediaBin({ className }: { className?: string }) {
+  const t = useT()
   const assets = useEditor((state) => state.assets)
   const selectedAssetId = useEditor((state) => state.selectedAssetId)
   const importError = useEditor((state) => state.importError)
@@ -41,12 +42,12 @@ export function MediaBin({ className }: { className?: string }) {
     >
       <div className="flex items-center justify-between gap-2 px-3 py-3">
         <div>
-          <h2 className="text-sm font-semibold">ספריית מדיה</h2>
-          <p className="text-[11px] text-muted-foreground">וידאו, שמע או תמונה</p>
+          <h2 className="text-sm font-semibold">{t('media.title')}</h2>
+          <p className="text-[11px] text-muted-foreground">{t('media.hint')}</p>
         </div>
         <Button type="button" size="sm" variant="secondary" onClick={() => inputRef.current?.click()}>
           <Upload />
-          ייבוא
+          {t('media.import')}
         </Button>
         <input
           ref={inputRef}
@@ -73,7 +74,7 @@ export function MediaBin({ className }: { className?: string }) {
             void loadSampleMedia().finally(() => setBusy(false))
           }}
         >
-          {busy ? 'טוען דוגמה…' : 'טעינת מדיה לדוגמה'}
+          {busy ? t('media.sampleBusy') : t('media.sample')}
         </Button>
       </div>
       {importError && <p className="px-3 pb-2 text-xs text-destructive">{importError}</p>}
@@ -81,11 +82,11 @@ export function MediaBin({ className }: { className?: string }) {
         <div className="flex flex-col gap-2 px-3 pb-3">
           {assets.length === 0 && (
             <div className="rounded-lg border border-dashed px-3 py-8 text-center text-sm text-muted-foreground">
-              גררו לכאן קבצים מהמחשב, או לחצו על ייבוא.
+              {t('media.empty')}
             </div>
           )}
           {assets.map((asset) => (
-            <AssetCard key={asset.id} asset={asset} selected={asset.id === selectedAssetId} />
+            <AssetCard key={asset.id} asset={asset} selected={asset.id === selectedAssetId} kind={kindLabel(asset.kind, t)} />
           ))}
         </div>
       </ScrollArea>
@@ -93,7 +94,8 @@ export function MediaBin({ className }: { className?: string }) {
   )
 }
 
-function AssetCard({ asset, selected }: { asset: Asset; selected: boolean }) {
+function AssetCard({ asset, selected, kind }: { asset: Asset; selected: boolean; kind: string }) {
+  const t = useT()
   return (
     <article
       draggable
@@ -117,7 +119,7 @@ function AssetCard({ asset, selected }: { asset: Asset; selected: boolean }) {
           </div>
         )}
         <span className="absolute start-1.5 top-1.5 rounded bg-black/70 px-1.5 py-0.5 text-[10px]">
-          {kindLabel(asset.kind)}
+          {kind}
         </span>
         {asset.kind !== 'image' && asset.duration > 0 && (
           <span dir="ltr" className="absolute end-1.5 bottom-1.5 rounded bg-black/70 px-1.5 py-0.5 font-mono text-[10px]">
@@ -129,10 +131,10 @@ function AssetCard({ asset, selected }: { asset: Asset; selected: boolean }) {
         <p className="min-w-0 flex-1 truncate text-xs" title={asset.name}>
           {asset.name}
         </p>
-        <Button type="button" size="icon-xs" variant="ghost" aria-label="הוספה לציר" onClick={() => placeAsset(asset.id, getPlayhead())}>
+        <Button type="button" size="icon-xs" variant="ghost" aria-label={t('media.add')} onClick={() => placeAsset(asset.id, getPlayhead())}>
           <Plus />
         </Button>
-        <Button type="button" size="icon-xs" variant="ghost" aria-label="מחיקת מדיה" onClick={() => void removeAsset(asset.id)}>
+        <Button type="button" size="icon-xs" variant="ghost" aria-label={t('media.remove')} onClick={() => void removeAsset(asset.id)}>
           <Trash2 />
         </Button>
       </div>

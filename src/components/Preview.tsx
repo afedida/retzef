@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { getUrl } from '@/lib/blobs'
 import { analyzeSpeech, audibleClips, clipPlaybackBuffer, loadAudioBuffer, schedulePreviewGain } from '@/lib/audio'
 import { youtubeSafeGuides } from '@/lib/creator'
+import { guideLabel } from '@/lib/i18n'
 import { clampSpeed, flattenCompounds, projectDuration, sourceTimeAt, updateText, videoLayers } from '@/lib/edit'
 import { matchPatch } from '@/lib/track'
 import { paintFrame, type Visual } from '@/lib/paint'
@@ -26,7 +27,7 @@ import {
   subscribeFrames,
   togglePlay,
 } from '@/state/editor'
-import { useEditor, usePlaying } from '@/state/hooks'
+import { useEditor, usePlaying, useT } from '@/state/hooks'
 import { presetById, REVIEW_RATES, type Asset, type Clip, type Project, type ReviewRate } from '@/types'
 
 class PreviewMixer {
@@ -87,6 +88,7 @@ class PreviewMixer {
 }
 
 export function Preview() {
+  const t = useT()
   const project = useEditor((state) => state.project)
   const assets = useEditor((state) => state.assets)
   const selectedClipId = useEditor((state) => state.selectedClipId)
@@ -320,7 +322,7 @@ export function Preview() {
     const current = getState()
     const text = current.project.clips.find((clip) => clip.id === current.selectedClipId && clip.text)
     if (!text?.text) {
-      setStatus('בחרו כתובית למעקב')
+      setStatus(t('preview.pickCaption'))
       return
     }
     const flat = flattenCompounds(current.project)
@@ -331,7 +333,7 @@ export function Preview() {
     })
     const video = videoClip ? videosRef.current.get(videoClip.id) : undefined
     if (!videoClip || !video) {
-      setStatus('אין וידאו מתחת לנקודה')
+      setStatus(t('preview.noVideo'))
       return
     }
     const sample = document.createElement('canvas')
@@ -401,7 +403,7 @@ export function Preview() {
                   className="absolute border border-[#50e6ff]/80"
                   style={{ left: `${guide.x * 100}%`, top: `${guide.y * 100}%`, width: `${guide.w * 100}%`, height: `${guide.h * 100}%` }}
                 >
-                  <span className="absolute start-1 top-0.5 text-[10px] text-white drop-shadow">{guide.label}</span>
+                  <span className="absolute start-1 top-0.5 text-[10px] text-white drop-shadow">{guideLabel(guide.id)}</span>
                 </div>
               ))}
             </div>
@@ -446,8 +448,8 @@ export function Preview() {
           {empty && (
             <div className="pointer-events-none absolute inset-0 grid place-items-center px-6 text-center">
               <div>
-                <p className="text-base font-medium">אין מה להציג עדיין</p>
-                <p className="mt-1 text-sm text-muted-foreground">ייבאו מדיה והניחו אותה על ציר הזמן</p>
+                <p className="text-base font-medium">{t('preview.emptyTitle')}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{t('preview.emptyHint')}</p>
               </div>
             </div>
           )}
@@ -455,16 +457,16 @@ export function Preview() {
       </div>
       <div ref={hostRef} className="pointer-events-none fixed start-[-2000px] top-0 h-24 w-40 overflow-hidden opacity-0" aria-hidden />
       <div className="flex h-12 shrink-0 items-center gap-2 border-t px-3">
-        <Button type="button" size="icon-sm" variant="ghost" aria-label="חזרה להתחלה" onClick={() => seek(0)}>
+        <Button type="button" size="icon-sm" variant="ghost" aria-label={t('preview.goStart')} onClick={() => seek(0)}>
           <SkipBack />
         </Button>
-        <Button type="button" size="icon-sm" variant="secondary" aria-label={playing ? 'השהיה' : 'ניגון'} onClick={togglePlay}>
+        <Button type="button" size="icon-sm" variant="secondary" aria-label={playing ? t('preview.pause') : t('preview.play')} onClick={togglePlay}>
           {playing ? <Pause /> : <Play />}
         </Button>
         <span ref={timecodeRef} dir="ltr" className="font-mono text-xs text-muted-foreground tabular-nums">
           00:00.00 / 00:00.00
         </span>
-        <div className="flex items-center gap-1" aria-label="מהירות סקירה">
+        <div className="flex items-center gap-1" aria-label={t('preview.reviewRate')}>
           {REVIEW_RATES.map((rate) => (
             <Button
               key={rate}
@@ -478,12 +480,12 @@ export function Preview() {
             </Button>
           ))}
         </div>
-        {gradeBypass && <span className="text-[11px] text-[#50e6ff]">בלי צבע</span>}
+        {gradeBypass && <span className="text-[11px] text-[#50e6ff]">{t('preview.noGrade')}</span>}
         <Button type="button" size="sm" variant="ghost" onClick={downloadThumbnail}>
           <ImageDown />
-          תמונה ממוזערת
+          {t('preview.thumbnail')}
         </Button>
-        <p className="ms-auto hidden text-[11px] text-muted-foreground sm:block">גררו כתוביות בתצוגה כדי למקם אותן</p>
+        <p className="ms-auto hidden text-[11px] text-muted-foreground sm:block">{t('preview.dragHint')}</p>
       </div>
     </section>
   )
