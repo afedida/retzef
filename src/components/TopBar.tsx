@@ -3,6 +3,9 @@ import {
   Archive,
   Download,
   FolderOpen,
+  HardDrive,
+  Keyboard,
+  LayoutTemplate,
   Redo2,
   Save,
   Undo2,
@@ -14,6 +17,7 @@ import { projectDuration } from '@/lib/edit'
 import { formatClock } from '@/lib/time'
 import { EXPORT_PRESETS, presetById, type ExportPresetId } from '@/types'
 import {
+  cancelExport,
   downloadProjectFile,
   downloadProjectPackage,
   endGesture,
@@ -22,6 +26,9 @@ import {
   redo,
   setExportOpen,
   setExportPreset,
+  setFolderOpen,
+  setShortcutOpen,
+  setTemplateOpen,
   undo,
 } from '@/state/editor'
 import { useEditor } from '@/state/hooks'
@@ -56,6 +63,8 @@ export function TopBar() {
   const fileRef = useRef<HTMLInputElement>(null)
   const duration = projectDuration(project)
   const preset = presetById(useEditor((state) => state.exportPreset))
+  const job = useEditor((state) => state.exportJob)
+  const exportOpen = useEditor((state) => state.exportOpen)
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-[#252526] px-3">
@@ -82,6 +91,15 @@ export function TopBar() {
         </ToolButton>
         <ToolButton label="בצע שוב (Ctrl+Shift+Z)" disabled={!canRedo} onClick={redo}>
           <Redo2 />
+        </ToolButton>
+        <ToolButton label="שמירה לתיקייה" onClick={() => setFolderOpen(true)}>
+          <HardDrive />
+        </ToolButton>
+        <ToolButton label="תבניות" onClick={() => setTemplateOpen(true)}>
+          <LayoutTemplate />
+        </ToolButton>
+        <ToolButton label="קיצורים" onClick={() => setShortcutOpen(true)}>
+          <Keyboard />
         </ToolButton>
         <ToolButton label="שמירת JSON" onClick={downloadProjectFile}>
           <Save />
@@ -117,6 +135,21 @@ export function TopBar() {
             </option>
           ))}
         </select>
+        {job?.running && !exportOpen && (
+          <button type="button" className="flex items-center gap-2 rounded-full border px-2 py-1 text-[11px]" onClick={() => setExportOpen(true)}>
+            <span className="max-w-40 truncate">{job.label}</span>
+            <span dir="ltr" className="font-mono text-[#50e6ff]">{Math.round(job.ratio * 100)}%</span>
+            <span
+              className="text-muted-foreground"
+              onClick={(event) => {
+                event.stopPropagation()
+                cancelExport()
+              }}
+            >
+              ביטול
+            </span>
+          </button>
+        )}
         <div dir="ltr" className="font-mono text-xs text-muted-foreground tabular-nums">
           {formatClock(duration)}
         </div>
